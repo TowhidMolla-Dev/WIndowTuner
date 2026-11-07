@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=WindowTuner
+Comment=Pick a Hyprland window and customize its rules
+Exec=windowtuner
+Icon=windowtuner
+Terminal=false
+Categories=Settings;Utility;
+StartupWMClass=windowtuner
