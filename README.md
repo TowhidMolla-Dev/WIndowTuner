@@ -7,6 +7,14 @@ and apply the rule.
 
 ## What it does
 
+### Interface
+
+WindowTuner uses a dark, Omarchy-accent-aware studio layout inspired by
+Hyprforge's visual language: compact section navigation, layered surfaces,
+clear active states, grouped settings, and a persistent rule preview/status
+area. It remains a separate, focused window-rule editor rather than a Hyprforge
+clone.
+
 ### Discover and select windows
 
 - Lists managed windows and refreshes the list periodically.
@@ -90,6 +98,15 @@ QT_QPA_PLATFORM=offscreen timeout 5s ./build/windowtuner
 
 The application is expected to keep running until the timeout; inspect stderr
 for QML errors.
+
+### Keyboard shortcuts
+
+- `Alt+1` through `Alt+5`: switch between Layout, Placement, Appearance,
+  Behavior, and Rules.
+- `Ctrl+F`: focus the window or saved-rule filter.
+- `Ctrl+R`: refresh the open-window list.
+- `Ctrl+S`: save a new rule or update the rule currently being edited.
+- `Escape`: cancel rule editing or dismiss the screen picker.
 
 ## Install
 

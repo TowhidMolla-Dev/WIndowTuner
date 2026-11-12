@@ -11,6 +11,11 @@ for the user-facing feature set.
 - [x] Show the checked/unchecked WindowTuner checklist in OpenCode's native TUI sidebar slot.
 - [x] Update the sidebar automatically when `TODO.md` changes.
 
+## Interface polish
+
+- [x] Apply a cohesive dark, theme-accented studio visual language with compact section navigation and clear preview/status hierarchy.
+- [ ] Capture and maintain interface screenshots at normal display sizes.
+
 ## Window picker and discovery
 
 - [x] Search current windows by title, class, and workspace.

@@ -11,7 +11,21 @@ ApplicationWindow {
     minimumHeight: 680
     visible: true
     title: qsTr("WindowTuner")
-    color: "#111214"
+    color: "#0e1110"
+
+    // Keep WindowTuner visually aligned with Omarchy/Hyprforge surfaces while
+    // retaining its own focused window-rule workflow.
+    readonly property color surface: "#151a18"
+    readonly property color raisedSurface: "#1c2320"
+    readonly property color outline: "#29332e"
+    readonly property color mutedForeground: "#98a59e"
+    readonly property var sections: [
+        { title: qsTr("Layout"), icon: "▦", subtitle: qsTr("Shape and size this window") },
+        { title: qsTr("Placement"), icon: "⌖", subtitle: qsTr("Choose where and how it appears") },
+        { title: qsTr("Appearance"), icon: "◐", subtitle: qsTr("Tune transparency and surfaces") },
+        { title: qsTr("Behavior"), icon: "⌘", subtitle: qsTr("Set focus and performance behavior") },
+        { title: qsTr("Rules"), icon: "☷", subtitle: qsTr("Manage saved window rules") }
+    ]
 
     Material.theme: Material.Dark
     Material.accent: theme.accent
@@ -214,7 +228,7 @@ ApplicationWindow {
             width: pickHint.implicitWidth + 52
             height: pickHint.implicitHeight + 34
             radius: 13
-            color: "#202226"
+        color: win.raisedSurface
             border.color: theme.accent
             Text {
                 id: pickHint
@@ -241,7 +255,22 @@ ApplicationWindow {
     }
 
     Shortcut { sequence: "Ctrl+R"; context: Qt.ApplicationShortcut; onActivated: backend.refreshWindows() }
-    Shortcut { sequence: "Ctrl+S"; context: Qt.ApplicationShortcut; onActivated: if (backend.selectedIndex >= 0) backend.saveRule(win.options()) }
+    Shortcut {
+        sequence: "Ctrl+S"
+        context: Qt.ApplicationShortcut
+        onActivated: {
+            if (win.editingRuleIndex >= 0) {
+                if (backend.updateRule(win.editingRuleIndex, win.options())) win.editingRuleIndex = -1
+            } else if (backend.selectedIndex >= 0) backend.saveRule(win.options())
+        }
+    }
+    Shortcut { sequence: "Ctrl+F"; context: Qt.ApplicationShortcut; onActivated: { win.category === 4 ? savedRuleSearch.forceActiveFocus() : windowSearch.forceActiveFocus(); (win.category === 4 ? savedRuleSearch : windowSearch).selectAll() } }
+    Shortcut { sequence: "Escape"; context: Qt.ApplicationShortcut; enabled: win.editingRuleIndex >= 0; onActivated: win.editingRuleIndex = -1 }
+    Shortcut { sequence: "Alt+1"; context: Qt.ApplicationShortcut; onActivated: win.category = 0 }
+    Shortcut { sequence: "Alt+2"; context: Qt.ApplicationShortcut; onActivated: win.category = 1 }
+    Shortcut { sequence: "Alt+3"; context: Qt.ApplicationShortcut; onActivated: win.category = 2 }
+    Shortcut { sequence: "Alt+4"; context: Qt.ApplicationShortcut; onActivated: win.category = 3 }
+    Shortcut { sequence: "Alt+5"; context: Qt.ApplicationShortcut; onActivated: win.category = 4 }
 
     ColumnLayout {
         anchors.fill: parent
@@ -250,9 +279,9 @@ ApplicationWindow {
         // A restrained app bar separates the product identity from the task.
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 76
-            color: "#18191c"
-            border.color: "#292b30"
+            Layout.preferredHeight: 68
+            color: "#111613"
+            border.color: win.outline
             border.width: 1
 
             RowLayout {
@@ -262,23 +291,27 @@ ApplicationWindow {
                 spacing: 13
 
                 Rectangle {
-                    Layout.preferredWidth: 38
-                    Layout.preferredHeight: 38
+                    Layout.preferredWidth: 36
+                    Layout.preferredHeight: 36
                     radius: 11
-                    color: Qt.alpha(theme.accent, 0.16)
-                    border.color: Qt.alpha(theme.accent, 0.36)
-                    Text { anchors.centerIn: parent; text: "W"; color: theme.accent; font.bold: true; font.pixelSize: 20 }
+                    color: Qt.alpha(theme.accent, 0.14)
+                    border.color: Qt.alpha(theme.accent, 0.35)
+                    Text { anchors.centerIn: parent; text: "✦"; color: theme.accent; font.bold: true; font.pixelSize: 19 }
                 }
                 ColumnLayout {
                     spacing: 1
                     Label { text: qsTr("WindowTuner"); font.pixelSize: 18; font.bold: true }
-                    Label { text: qsTr("Hyprland window rules"); font.pixelSize: 12; opacity: 0.62 }
+                    Label { text: qsTr("WINDOW RULE STUDIO"); font.pixelSize: 9; font.bold: true; color: win.mutedForeground; opacity: 0.78 }
                 }
                 Item { Layout.fillWidth: true }
                 Label {
-                    text: qsTr("%1 windows").arg(backend.windows.length)
-                    color: "#a5a7af"
-                    font.pixelSize: 12
+                    text: qsTr("%1 WINDOWS").arg(backend.windows.length)
+                    color: win.mutedForeground
+                    font.pixelSize: 9
+                    font.bold: true
+                    leftPadding: 10
+                    rightPadding: 10
+                    background: Rectangle { radius: 7; color: win.raisedSurface; border.color: win.outline }
                     Layout.rightMargin: 6
                 }
                 ToolButton {
@@ -299,11 +332,11 @@ ApplicationWindow {
 
             // Window selection is intentionally always visible while editing.
             Rectangle {
-                Layout.preferredWidth: 310
+                Layout.preferredWidth: 300
                 Layout.fillHeight: true
                 radius: 14
-                color: "#18191c"
-                border.color: "#292b30"
+                color: win.surface
+                border.color: win.outline
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -312,7 +345,7 @@ ApplicationWindow {
 
                     RowLayout {
                         Layout.fillWidth: true
-                        Label { text: qsTr("Select a window"); font.pixelSize: 16; font.bold: true }
+                        Label { text: qsTr("WINDOWS"); font.pixelSize: 11; font.bold: true; font.letterSpacing: 1.1 }
                         Item { Layout.fillWidth: true }
                         ToolButton {
                             text: "⌖"
@@ -322,9 +355,9 @@ ApplicationWindow {
                             onClicked: pickerOverlay.visible = true
                         }
                         Label {
-                            text: qsTr("%1 OPEN").arg(backend.windows.length)
-                            color: "#9699a2"
-                            font.pixelSize: 10
+                            text: qsTr("%1 LIVE").arg(backend.windows.length)
+                            color: win.mutedForeground
+                            font.pixelSize: 9
                             font.bold: true
                         }
                     }
@@ -353,9 +386,9 @@ ApplicationWindow {
                             onClicked: backend.selectWindow(modelData.sourceIndex)
                             background: Rectangle {
                                 radius: 9
-                                color: windowItem.highlighted ? Qt.alpha(theme.accent, 0.13) : (windowItem.hovered ? "#222429" : "transparent")
-                                border.width: windowItem.highlighted ? 1 : 0
-                                border.color: Qt.alpha(theme.accent, 0.48)
+                                    color: windowItem.highlighted ? Qt.alpha(theme.accent, 0.11) : (windowItem.hovered ? win.raisedSurface : "transparent")
+                                    border.width: windowItem.highlighted ? 1 : 0
+                                    border.color: Qt.alpha(theme.accent, 0.48)
                             }
                             contentItem: RowLayout {
                                 spacing: 11
@@ -376,14 +409,14 @@ ApplicationWindow {
                                     spacing: 3
                                     Label {
                                         Layout.fillWidth: true
-                                        text: modelData.currentTitle || modelData.title || qsTr("Untitled window")
+                                text: modelData.currentTitle || modelData.title || qsTr("Untitled window")
                                         elide: Text.ElideRight
                                         font.pixelSize: 13
                                         font.bold: windowItem.highlighted
                                     }
                                     Label {
                                         Layout.fillWidth: true
-                                        text: modelData["class"] + "  ·  " + modelData.workspace + "  ·  " + (modelData.monitorName || qsTr("monitor %1").arg(modelData.monitor))
+                                text: modelData["class"] + "  ·  WS " + modelData.workspace + "  ·  " + (modelData.monitorName || qsTr("monitor %1").arg(modelData.monitor))
                                         elide: Text.ElideRight
                                         opacity: 0.58
                                         font.pixelSize: 10
@@ -414,7 +447,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.preferredHeight: selectedInfo.implicitHeight + 22
                         radius: 10
-                        color: "#202125"
+                        color: win.raisedSurface
                         visible: backend.selectedIndex >= 0
                         ColumnLayout {
                             id: selectedInfo
@@ -466,33 +499,61 @@ ApplicationWindow {
                 RowLayout {
                     Layout.fillWidth: true
                     ColumnLayout {
-                        spacing: 3
-                        Label { text: qsTr("Configure window"); font.pixelSize: 23; font.bold: true }
-                        Label { text: qsTr("Choose a category, tune the rule, then apply it."); opacity: 0.62; font.pixelSize: 12 }
+                        spacing: 2
+                        Label { text: qsTr("WINDOWTUNER  /  %1 OF 5").arg(win.category + 1); font.pixelSize: 9; font.bold: true; color: theme.accent; font.letterSpacing: 0.9 }
+                        Label { text: win.sections[win.category].title; font.pixelSize: 23; font.bold: true }
+                        Label { text: win.sections[win.category].subtitle; color: win.mutedForeground; font.pixelSize: 11 }
                     }
                     Item { Layout.fillWidth: true }
                     Button {
-                        text: qsTr("Preview rule")
+                        text: (win.previewExpanded ? "⌄  " + qsTr("Hide preview") : "◉  " + qsTr("Preview rule"))
                         flat: true
+                        highlighted: win.previewExpanded
                         onClicked: win.previewExpanded = !win.previewExpanded
                     }
                 }
 
-                // Categories keep related settings together rather than presenting one long form.
+                // Segmented section navigation, following Hyprforge's compact
+                // studio navigation while keeping WindowTuner's own workflows.
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 6
+                    spacing: 5
                     Repeater {
-                        model: [qsTr("Layout"), qsTr("Placement"), qsTr("Appearance"), qsTr("Behavior"), qsTr("Saved rules")]
+                        model: win.sections
                         delegate: Button {
-                            required property string modelData
+                            id: sectionButton
+                            required property var modelData
                             required property int index
                             Layout.fillWidth: true
-                            text: modelData
+                            Layout.preferredHeight: 40
                             checkable: true
                             checked: win.category === index
-                            flat: !checked
+                            flat: true
                             onClicked: win.category = index
+                            background: Rectangle {
+                                radius: 9
+                                color: sectionButton.checked ? Qt.alpha(theme.accent, 0.13) : sectionButton.hovered ? win.raisedSurface : "transparent"
+                                border.width: sectionButton.checked ? 1 : 0
+                                border.color: Qt.alpha(theme.accent, 0.38)
+                                Behavior on color { ColorAnimation { duration: 100 } }
+                            }
+                            contentItem: RowLayout {
+                                spacing: 7
+                                Text {
+                                    text: modelData.icon
+                                    color: sectionButton.checked ? theme.accent : win.mutedForeground
+                                    font.pixelSize: 14
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: modelData.title
+                                    horizontalAlignment: Text.AlignHCenter
+                                    color: sectionButton.checked ? theme.accent : "#c2cbc5"
+                                    font.pixelSize: 10
+                                    font.bold: sectionButton.checked
+                                    elide: Text.ElideRight
+                                }
+                            }
                         }
                     }
                 }
@@ -519,7 +580,7 @@ ApplicationWindow {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: layoutCard.implicitHeight + 30
-                                    radius: 13; color: "#18191c"; border.color: "#292b30"
+                                    radius: 13; color: win.surface; border.color: win.outline
                                     ColumnLayout {
                                         id: layoutCard
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -559,7 +620,7 @@ ApplicationWindow {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: sizeContent.implicitHeight + 30
-                                    radius: 13; color: "#18191c"; border.color: "#292b30"
+                                    radius: 13; color: win.surface; border.color: win.outline
                                     ColumnLayout {
                                         id: sizeContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -609,7 +670,7 @@ ApplicationWindow {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: constraintsContent.implicitHeight + 30
-                                    radius: 13; color: "#18191c"; border.color: "#292b30"
+                                    radius: 13; color: win.surface; border.color: win.outline
                                     ColumnLayout {
                                         id: constraintsContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -644,7 +705,7 @@ ApplicationWindow {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: placementCard.implicitHeight + 30
-                                    radius: 13; color: "#18191c"; border.color: "#292b30"
+                                    radius: 13; color: win.surface; border.color: win.outline
                                     ColumnLayout {
                                         id: placementCard
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -662,7 +723,7 @@ ApplicationWindow {
                                             }
                                             Label { text: qsTr("Examples: 2, 3 silent, name:chat"); font.pixelSize: 10; opacity: 0.5 }
                                         }
-                                        Rectangle { Layout.fillWidth: true; height: 1; color: "#2b2d32" }
+                                        Rectangle { Layout.fillWidth: true; height: 1; color: win.outline }
                                         CheckBox { id: pinBox; text: qsTr("Pin on every workspace"); onToggled: win.refreshPreview() }
                                         Label { text: qsTr("Pinned windows stay visible when you switch workspaces."); font.pixelSize: 11; opacity: 0.55; wrapMode: Text.WordWrap }
                                     }
@@ -670,7 +731,7 @@ ApplicationWindow {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: scopeCard.implicitHeight + 30
-                                    radius: 13; color: "#18191c"; border.color: "#292b30"
+                                    radius: 13; color: win.surface; border.color: win.outline
                                     ColumnLayout {
                                         id: scopeCard
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -700,7 +761,7 @@ ApplicationWindow {
                             }
                             Label { text: qsTr("Hyprland's negative: selector excludes matching titles."); font.pixelSize: 10; opacity: 0.5 }
                         }
-                        Rectangle { Layout.fillWidth: true; height: 1; color: "#2b2d32" }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: win.outline }
                         Label { text: qsTr("Additional match conditions"); font.pixelSize: 12; font.bold: true }
                         CheckBox { id: workspaceMatch; text: qsTr("Only on the selected window's workspace"); onToggled: win.refreshPreview() }
                         CheckBox { id: xdgTagMatch; text: qsTr("Match the XDG tag"); enabled: backend.selectedWindow.xdgTag !== ""; onToggled: win.refreshPreview() }
@@ -730,7 +791,7 @@ ApplicationWindow {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: opacityContent.implicitHeight + 30
-                                    radius: 13; color: "#18191c"; border.color: "#292b30"
+                                    radius: 13; color: win.surface; border.color: win.outline
                                     ColumnLayout {
                                         id: opacityContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -764,7 +825,7 @@ ApplicationWindow {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: chromeContent.implicitHeight + 30
-                                    radius: 13; color: "#18191c"; border.color: "#292b30"
+                                    radius: 13; color: win.surface; border.color: win.outline
                                     ColumnLayout {
                                         id: chromeContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -789,7 +850,7 @@ ApplicationWindow {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: effectsContent.implicitHeight + 30
-                                    radius: 13; color: "#18191c"; border.color: "#292b30"
+                                    radius: 13; color: win.surface; border.color: win.outline
                                     ColumnLayout {
                                         id: effectsContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -812,7 +873,7 @@ ApplicationWindow {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: focusContent.implicitHeight + 30
-                                    radius: 13; color: "#18191c"; border.color: "#292b30"
+                                    radius: 13; color: win.surface; border.color: win.outline
                                     ColumnLayout {
                                         id: focusContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -825,7 +886,7 @@ ApplicationWindow {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: performanceContent.implicitHeight + 30
-                                    radius: 13; color: "#18191c"; border.color: "#292b30"
+                                    radius: 13; color: win.surface; border.color: win.outline
                                     ColumnLayout {
                                         id: performanceContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -850,7 +911,7 @@ ApplicationWindow {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: savedIntro.implicitHeight + 32
-                                    radius: 13; color: "#18191c"; border.color: "#292b30"
+                                    radius: 13; color: win.surface; border.color: win.outline
                                     ColumnLayout {
                                         id: savedIntro
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -876,7 +937,7 @@ ApplicationWindow {
                                         required property int index
                                         Layout.fillWidth: true
                                         implicitHeight: ruleRow.implicitHeight + 26
-                                        radius: 12; color: "#18191c"; border.color: "#292b30"
+                                        radius: 12; color: win.surface; border.color: win.outline
                                         RowLayout {
                                             id: ruleRow
                                             anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
@@ -968,8 +1029,8 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.preferredHeight: previewExpanded ? 140 : 54
                     radius: 12
-                    color: "#18191c"
-                    border.color: "#292b30"
+                    color: win.surface
+                    border.color: win.outline
                     Behavior on Layout.preferredHeight { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                     ColumnLayout {
                         anchors.fill: parent
@@ -992,7 +1053,7 @@ ApplicationWindow {
                             font.family: "monospace"
                             font.pixelSize: 10
                             text: backend.previewRule(win.options())
-                            background: Rectangle { color: "#111214"; radius: 6 }
+                            background: Rectangle { color: win.raisedSurface; radius: 6 }
                         }
                         Label {
                             visible: !win.previewExpanded
@@ -1009,8 +1070,8 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 66
                     radius: 12
-                    color: "#18191c"
-                    border.color: "#292b30"
+                    color: win.surface
+                    border.color: win.outline
                     RowLayout {
                         anchors.fill: parent
                         anchors.leftMargin: 14
