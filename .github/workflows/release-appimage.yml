@@ -56,6 +56,7 @@ jobs:
             qt6-qpa-plugins \
             qt6-tools-dev \
             qt6-tools-dev-tools \
+            qt6-wayland \
             qml6-module-qtquick \
             qml6-module-qtquick-controls \
             qml6-module-qtquick-layouts \
@@ -80,6 +81,7 @@ jobs:
       - name: Package AppImage
         env:
           LINUXDEPLOY: ${{ runner.temp }}/linuxdeploy/linuxdeploy-x86_64.AppImage
+          EXTRA_PLATFORM_PLUGINS: libqwayland-egl.so;libqwayland-generic.so;libqoffscreen.so
           QMAKE: /usr/bin/qmake6
           TMPDIR: ${{ runner.temp }}
         run: ./bin/build-appimage "${{ steps.version.outputs.version }}" "$RUNNER_TEMP/release"
