@@ -15,9 +15,26 @@ Lua.
   <strong>Shape windows · place apps · keep changes reversible</strong>
 </p>
 
+> **Download:** [Get WindowTuner 1.0.0 for Linux (x86_64 AppImage)](https://github.com/TowhidMolla-Dev/WIndowTuner/releases/latest).
+> The AppImage bundles Qt. A running Hyprland session and `hyprctl` must still
+> be available on your system.
+
 ---
 
 ## Get started
+
+### Run the AppImage
+
+Download `WindowTuner-1.0.0-x86_64.AppImage` from
+[GitHub Releases](https://github.com/TowhidMolla-Dev/WIndowTuner/releases/latest),
+then run:
+
+```sh
+chmod +x WindowTuner-1.0.0-x86_64.AppImage
+./WindowTuner-1.0.0-x86_64.AppImage
+```
+
+Check the adjacent `.sha256` file if you want to verify the download.
 
 ### What you need
 
@@ -27,7 +44,7 @@ Lua.
 - To build from source: Qt 6 development packages (Quick, QML, Quick Controls),
   `qmake6`, a C++17 compiler, and `make`.
 
-### Build and install
+### Build and install from source
 
 ```sh
 git clone https://github.com/TowhidMolla-Dev/WIndowTuner.git

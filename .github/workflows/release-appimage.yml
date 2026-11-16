@@ -1,0 +1,118 @@
+name: Release AppImage
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and release (for example v1.0.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    name: Build x86_64 AppImage
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Validate release version
+        id: version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          TAG="$RELEASE_TAG"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a version tag like v1.0.0; got: $TAG" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          if ! grep -q "^VERSION = ${VERSION}$" windowtuner.pro; then
+            echo "Tag version $VERSION does not match windowtuner.pro." >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install Qt build and QML runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            libfuse2 \
+            qt6-base-dev \
+            qt6-declarative-dev \
+            qt6-declarative-dev-tools \
+            qt6-qpa-plugins \
+            qt6-tools-dev \
+            qt6-tools-dev-tools \
+            qml6-module-qtquick \
+            qml6-module-qtquick-controls \
+            qml6-module-qtquick-layouts \
+            qml6-module-qtquick-templates \
+            qml6-module-qtquick-window
+
+      - name: Build WindowTuner
+        run: ./bin/build
+
+      - name: Download linuxdeploy and Qt deployment plugin
+        run: |
+          mkdir -p "$RUNNER_TEMP/linuxdeploy"
+          cd "$RUNNER_TEMP/linuxdeploy"
+          curl --fail --location --retry 3 \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
+            --output linuxdeploy-x86_64.AppImage
+          curl --fail --location --retry 3 \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage \
+            --output linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage
+
+      - name: Package AppImage
+        env:
+          LINUXDEPLOY: ${{ runner.temp }}/linuxdeploy/linuxdeploy-x86_64.AppImage
+          TMPDIR: ${{ runner.temp }}
+        run: ./bin/build-appimage "${{ steps.version.outputs.version }}" "$RUNNER_TEMP/release"
+
+      - name: Smoke-test version and checksum
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          APP="$RUNNER_TEMP/release/WindowTuner-${{ steps.version.outputs.version }}-x86_64.AppImage"
+          "$APP" --version
+          cd "$RUNNER_TEMP/release"
+          sha256sum --check "$(basename "$APP").sha256"
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: WindowTuner ${{ steps.version.outputs.tag }}
+          draft: false
+          prerelease: false
+          body: |
+            ## WindowTuner ${{ steps.version.outputs.version }}
+
+            A self-contained x86_64 AppImage for Linux desktops running Hyprland.
+            Qt and the QML modules are bundled; Hyprland and `hyprctl` are provided by your system.
+
+            ### Install
+
+            1. Download `WindowTuner-${{ steps.version.outputs.version }}-x86_64.AppImage`.
+            2. Make it executable: `chmod +x WindowTuner-${{ steps.version.outputs.version }}-x86_64.AppImage`
+            3. Run it: `./WindowTuner-${{ steps.version.outputs.version }}-x86_64.AppImage`
+
+            Verify the download with the adjacent `.sha256` file.
+          files: |
+            ${{ runner.temp }}/release/WindowTuner-${{ steps.version.outputs.version }}-x86_64.AppImage
+            ${{ runner.temp }}/release/WindowTuner-${{ steps.version.outputs.version }}-x86_64.AppImage.sha256
+          fail_on_unmatched_files: true

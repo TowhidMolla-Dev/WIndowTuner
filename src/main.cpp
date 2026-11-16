@@ -30,7 +30,7 @@ int main(int argc, char *argv[])
         qputenv("QT_QPA_PLATFORM", "offscreen");
     QGuiApplication app(argc, argv);
     app.setApplicationName("windowtuner");
-    app.setApplicationVersion("0.1.0");
+    app.setApplicationVersion("1.0.0");
     app.setDesktopFileName("windowtuner");
     qputenv("QT_QUICK_CONTROLS_MATERIAL_VARIANT", "Dense");
     QQuickStyle::setStyle("Material");

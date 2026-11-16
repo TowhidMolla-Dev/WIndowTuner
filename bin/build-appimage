@@ -1,0 +1,59 @@
+#!/bin/sh
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+VERSION="${1:-}"
+OUTPUT_DIR="${2:-$ROOT/build/appimage}"
+LINUXDEPLOY="${LINUXDEPLOY:-}"
+
+if [ -z "$VERSION" ]; then
+    echo "Usage: $0 VERSION [OUTPUT_DIRECTORY]" >&2
+    exit 2
+fi
+if [ -z "$LINUXDEPLOY" ] || [ ! -x "$LINUXDEPLOY" ]; then
+    echo "Set LINUXDEPLOY to an executable linuxdeploy AppImage." >&2
+    exit 2
+fi
+
+PLUGIN_DIR="$(CDPATH= cd -- "$(dirname -- "$LINUXDEPLOY")" && pwd)"
+if [ ! -x "$PLUGIN_DIR/linuxdeploy-plugin-qt-x86_64.AppImage" ]; then
+    echo "Place linuxdeploy-plugin-qt-x86_64.AppImage beside linuxdeploy." >&2
+    exit 2
+fi
+if [ ! -x "$ROOT/build/windowtuner" ]; then
+    "$ROOT/bin/build"
+fi
+
+mkdir -p "$OUTPUT_DIR"
+OUTPUT_DIR="$(CDPATH= cd -- "$OUTPUT_DIR" && pwd)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/windowtuner-appimage.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+APPDIR="$WORK/AppDir"
+mkdir -p "$APPDIR"
+
+(
+    cd "$WORK"
+    export QML_SOURCES_PATHS="$ROOT/src"
+    export APPIMAGE_EXTRACT_AND_RUN=1
+    "$LINUXDEPLOY" \
+        --appdir "$APPDIR" \
+        --executable "$ROOT/build/windowtuner" \
+        --desktop-file "$ROOT/pkgbuild/windowtuner.desktop" \
+        --icon-file "$ROOT/pkgbuild/windowtuner.svg" \
+        --plugin qt \
+        --output appimage
+)
+
+GENERATED="$(find "$WORK" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+if [ -z "$GENERATED" ]; then
+    echo "linuxdeploy completed without producing an AppImage." >&2
+    exit 1
+fi
+
+ARTIFACT="$OUTPUT_DIR/WindowTuner-$VERSION-x86_64.AppImage"
+install -m755 "$GENERATED" "$ARTIFACT"
+(
+    cd "$OUTPUT_DIR"
+    sha256sum "$(basename "$ARTIFACT")" > "$(basename "$ARTIFACT").sha256"
+)
+echo "Created $ARTIFACT"
