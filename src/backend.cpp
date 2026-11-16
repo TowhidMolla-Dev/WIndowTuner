@@ -11,6 +11,9 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QLockFile>
+#include <QDateTime>
+#include <QCryptographicHash>
 #include <QUuid>
 #include <algorithm>
 #include <limits>
@@ -41,7 +44,7 @@ QString patternFor(const QString &value, const QString &mode)
 {
     if (mode == "regex") return value;
     const QString escaped = regexEscape(value);
-    return mode == "contains" ? escaped : "^" + escaped + "$";
+    return mode == "contains" ? ".*" + escaped + ".*" : "^" + escaped + "$";
 }
 
 QString luaValue(const QVariant &value)
@@ -51,6 +54,13 @@ QString luaValue(const QVariant &value)
     if (value.metaType().id() == QMetaType::QVariantList) {
         QStringList values;
         for (const QVariant &entry : value.toList()) values.append(luaValue(entry));
+        return "{ " + values.join(", ") + " }";
+    }
+    if (value.metaType().id() == QMetaType::QVariantMap) {
+        QStringList values;
+        const auto map = value.toMap();
+        for (auto it = map.cbegin(); it != map.cend(); ++it)
+            values << "[" + luaString(it.key()) + "] = " + luaValue(it.value());
         return "{ " + values.join(", ") + " }";
     }
     if (value.metaType().id() == QMetaType::Int || value.metaType().id() == QMetaType::LongLong ||
@@ -90,6 +100,11 @@ Backend::Backend(QObject *parent)
               QDir::homePath() + "/.config/hypr/hyprland.lua",
               QStandardPaths::findExecutable("hyprctl"), parent)
 {
+    const QString configured = m_library.value("entryPoint").toString();
+    if (!configured.isEmpty() && QFileInfo(configured).isAbsolute() && QFileInfo(configured).isReadable()) {
+        m_hyprlandConfig = configured;
+        m_diskFingerprint = fingerprint();
+    }
 }
 
 Backend::Backend(const QString &configDirectory, const QString &hyprlandConfig,
@@ -98,12 +113,18 @@ Backend::Backend(const QString &configDirectory, const QString &hyprlandConfig,
       m_hyprlandConfig(hyprlandConfig), m_hyprctl(hyprctl),
       m_rulePath(configDirectory + "/windowtuner.lua")
 {
-    QFile saved(configDirectory + "/windowtuner.json");
-    if (saved.open(QIODevice::ReadOnly)) {
-        const QJsonDocument document = QJsonDocument::fromJson(saved.readAll());
-        if (document.isArray()) updateSavedRules(document.array());
-    }
+    QJsonArray saved;
+    QString dataError;
+    if (readRuleData(&saved, &dataError)) updateSavedRules(saved);
+    m_diskFingerprint = fingerprint();
+    loadJournal();
+    loadLibrary();
+    m_trialTimer.setSingleShot(true);
+    connect(&m_trialTimer, &QTimer::timeout, this, &Backend::revertTrial);
+    m_monitorRevertTimer.setSingleShot(true);
+    connect(&m_monitorRevertTimer, &QTimer::timeout, this, &Backend::revertMonitorLayout);
     refreshWindows();
+    if (!dataError.isEmpty()) setStatus(dataError);
     m_refreshTimer.setInterval(1800);
     connect(&m_refreshTimer, &QTimer::timeout, this, &Backend::refreshWindows);
     m_refreshTimer.start();
@@ -124,6 +145,7 @@ QVariantList Backend::parseClients(const QByteArray &json, QString *error)
         QVariantMap row;
         row.insert("address", client.value("address").toString());
         row.insert("class", client.value("initialClass").toString(client.value("class").toString()));
+        row.insert("currentClass", client.value("class").toString());
         row.insert("title", client.value("initialTitle").toString(client.value("title").toString()));
         row.insert("currentTitle", client.value("title").toString());
         row.insert("workspace", client.value("workspace").toObject().value("name").toString());
@@ -165,10 +187,12 @@ void Backend::refreshWindows()
         return;
     }
     // Add readable monitor identities without asking the UI to issue another query.
+    m_monitors.clear();
     QProcess monitorProcess;
     monitorProcess.start(m_hyprctl, {"-j", "monitors"});
     if (monitorProcess.waitForStarted(1000) && monitorProcess.waitForFinished(2000) && monitorProcess.exitCode() == 0) {
         const QJsonArray monitorArray = QJsonDocument::fromJson(monitorProcess.readAllStandardOutput()).array();
+        m_monitors = monitorArray.toVariantList();
         QHash<int, QString> names;
         for (const QJsonValue &value : monitorArray) {
             const QJsonObject monitor = value.toObject();
@@ -189,7 +213,7 @@ void Backend::refreshWindows()
     m_selectedIndex = -1;
     for (int i = 0; i < clients.size(); ++i)
         if (clients.at(i).toMap().value("address").toString() == selectedAddress) { m_selectedIndex = i; break; }
-    if (m_selectedIndex < 0 && !clients.isEmpty()) m_selectedIndex = 0;
+    if (m_selectedIndex < 0 && !clients.isEmpty() && m_offlineTarget.isEmpty()) m_selectedIndex = 0;
     emit windowsChanged();
     emit selectedChanged();
     if (!m_hasRefreshed || previousCount != clients.size())
@@ -225,13 +249,15 @@ void Backend::selectWindow(int index)
 {
     if (index < 0 || index >= m_windows.size())
         return;
-    if (m_selectedIndex == index)
+    if (m_selectedIndex == index && m_offlineTarget.isEmpty())
         return;
+    m_offlineTarget.clear();
     m_selectedIndex = index;
     emit selectedChanged();
 }
 
-QString Backend::luaRule(const QVariantMap &window, const QVariantMap &settings)
+QString Backend::luaRule(const QVariantMap &window, const QVariantMap &settings,
+                         const QJsonObject &workspaces)
 {
     const QString klass = window.value("class").toString();
     const QString title = window.value("title").toString();
@@ -260,9 +286,14 @@ QString Backend::luaRule(const QVariantMap &window, const QVariantMap &settings)
         match.append(QString("%1 = %2").arg(it.key(), luaValue(value)));
     }
     if (!settings.value("excludeTitle").toString().trimmed().isEmpty() && !matchValues.contains("title"))
-        match.append(QString("title = %1").arg(luaString("negative:" + patternFor(settings.value("excludeTitle").toString().trimmed(), titleMode))));
+        match.append(QString("title = %1").arg(luaString("negative:" + settings.value("excludeTitle").toString().trimmed())));
 
     QStringList effects;
+    const auto placement = settings.value("placement").toMap();
+    if (placement.value("enabled").toBool() && placement.value("runtimeRecovery").toBool()) {
+        const auto digest = QCryptographicHash::hash(match.join(", ").toUtf8(), QCryptographicHash::Sha256).toHex().left(24);
+        effects << "tag = " + luaString("+_windowtuner_" + QString::fromLatin1(digest));
+    }
     const QString layout = settings.value("layout", "floating").toString();
     if (layout == "floating") {
         effects << "float = true";
@@ -290,21 +321,42 @@ QString Backend::luaRule(const QVariantMap &window, const QVariantMap &settings)
         effects << QString("opacity = %1").arg(luaString(number(settings, "opacityActive", 1.0) + " " + number(settings, "opacityInactive", 0.9)));
     if (settings.value("borderEnabled", false).toBool())
         effects << QString("border_size = %1").arg(settings.value("borderSize", 2).toInt());
-    if (!settings.value("workspace", "").toString().trimmed().isEmpty())
-        effects << QString("workspace = %1").arg(luaString(settings.value("workspace").toString().trimmed()));
+    if (!settings.value("workspace", "").toString().trimmed().isEmpty() &&
+        !settings.value("startupOnly", false).toBool()) {
+        // A startup-only placement must not pin every later window of the app;
+        // the generated runtime moves only the windows opened at login.
+        QString workspace = settings.value("workspace").toString().trimmed();
+        bool silentSuffix = false;
+        if (workspace.endsWith(" silent")) { workspace.chop(7); silentSuffix = true; workspace = workspace.trimmed(); }
+        const QString monitor = workspaces.value(workspace).toObject().value("monitor").toString();
+        if (!monitor.isEmpty() && QRegularExpression("^([1-9]|10)$").match(workspace).hasMatch()) {
+            // The slot means this monitor's own workspace on Omarchy 4.5; the
+            // generated runtime resolves it from the monitor description.
+            QString expression = "__windowtuner_ws(" + luaString(workspace) + ", " +
+                luaString("desc:" + monitor) + ")";
+            if (silentSuffix || settings.value("noInitialFocus", false).toBool())
+                expression += " .. \" silent\"";
+            effects << "workspace = " + expression;
+        } else {
+            effects << "workspace = " + luaString(settings.value("workspace").toString().trimmed());
+        }
+    }
+    if (!settings.value("monitor").toString().isEmpty())
+        effects << QString("monitor = %1").arg(luaString(settings.value("monitor").toString()));
 
-    return QString("o.window(\n  { %1 },\n  { %2 }\n)")
+    return QString("hl.window_rule({\n  match = { %1 },\n  %2\n})")
         .arg(match.join(", "), effects.join(", "));
 }
 
 QString Backend::previewRule(const QVariantMap &settings) const
 {
-    if (m_selectedIndex < 0 || m_selectedIndex >= m_windows.size())
+    if (selectedWindow().value("class").toString().isEmpty())
         return "-- Select a window first.";
-    const QVariantMap window = m_windows.at(m_selectedIndex).toMap();
-    if (settings.value("matchTitle", true).toBool() && window.value("title").toString().isEmpty())
+    const QVariantMap window = selectedWindow();
+    if (settings.value("matchTitle", true).toBool() && window.value("title").toString().isEmpty() &&
+        settings.value("match").toMap().value("title").toString().isEmpty())
         return "-- This window has no initial title. Uncheck title matching to deliberately make a class-wide rule.";
-    return luaRule(window, settings);
+    return luaRule(window, settings, workspaceData());
 }
 
 QString Backend::liveApplyCode(const QVariantMap &window, const QVariantMap &settings)
@@ -313,6 +365,9 @@ QString Backend::liveApplyCode(const QVariantMap &window, const QVariantMap &set
     if (address.isEmpty()) return {};
     const QString selector = luaString("address:" + address);
     QStringList commands;
+    if (!settings.value("monitor").toString().isEmpty())
+        commands << QString("hl.dispatch(hl.dsp.window.move({ window = %1, monitor = %2, follow = false }))")
+                        .arg(selector, luaString(settings.value("monitor").toString()));
     const QString layout = settings.value("layout", "floating").toString();
     if (layout == "floating" || layout == "tiled") {
         commands << QString("hl.dispatch(hl.dsp.window.float({ window = %1, action = %2 }))")
@@ -340,7 +395,8 @@ QString Backend::liveApplyCode(const QVariantMap &window, const QVariantMap &set
     };
     if (settings.value("noBlur", false).toBool()) setProp("no_blur", "true");
     if (settings.value("noShadow", false).toBool()) setProp("no_shadow", "true");
-    if (settings.value("noInitialFocus", false).toBool()) setProp("no_focus", "true");
+    // Initial-focus is a creation-time effect. Setting no_focus live would
+    // incorrectly prevent the user from focusing the window at all.
     if (settings.value("noAnim", false).toBool()) setProp("no_anim", "true");
     if (settings.value("noDim", false).toBool()) setProp("no_dim", "true");
     if (settings.value("noVrr", false).toBool()) setProp("no_vrr", "true");
@@ -355,35 +411,26 @@ QString Backend::liveApplyCode(const QVariantMap &window, const QVariantMap &set
 
 bool Backend::saveRule(const QVariantMap &settings)
 {
-    if (m_selectedIndex < 0 || m_selectedIndex >= m_windows.size()) {
+    const auto problems = validateSettings(settings);
+    if (!problems.isEmpty()) { setStatus(problems.join("\n")); return false; }
+    if (selectedWindow().isEmpty()) {
         setStatus("Choose a window before saving a rule.");
         return false;
     }
-    const QVariantMap window = m_windows.at(m_selectedIndex).toMap();
+    const QVariantMap window = selectedWindow();
     if (window.value("class").toString().isEmpty()) {
         setStatus("This window has no class, so it cannot be targeted safely.");
         return false;
     }
-    if (settings.value("matchTitle", true).toBool() && window.value("title").toString().isEmpty()) {
+    if (settings.value("matchTitle", true).toBool() && window.value("title").toString().isEmpty() &&
+        settings.value("match").toMap().value("title").toString().isEmpty()) {
         setStatus("This window has no initial title. Uncheck title matching to confirm a rule for every window of this class.");
         return false;
     }
 
-    const QString dataPath = m_configDirectory + "/windowtuner.json";
     QJsonArray rules;
-    QFile existing(dataPath);
-    if (existing.exists()) {
-        if (!existing.open(QIODevice::ReadOnly)) {
-            setStatus("Could not read existing WindowTuner rules: " + existing.errorString());
-            return false;
-        }
-        const auto document = QJsonDocument::fromJson(existing.readAll());
-        if (!document.isArray()) {
-            setStatus("Existing WindowTuner rules file is not valid JSON; it was left untouched.");
-            return false;
-        }
-        rules = document.array();
-    }
+    QString error;
+    if (!readRuleData(&rules, &error)) { setStatus(error); return false; }
 
     QVariantMap match = settings.value("match").toMap();
     if (match.isEmpty()) {
@@ -392,7 +439,7 @@ bool Backend::saveRule(const QVariantMap &settings)
     }
     const QJsonObject matchObject = QJsonObject::fromVariantMap(match);
     QJsonObject saved;
-    saved.insert("class", window.value("class").toString());
+    saved.insert("class", match.value("class", match.value("initial_class", window.value("class"))).toString());
     saved.insert("title", match.value("title").toString());
     saved.insert("match", QJsonObject::fromVariantMap(match));
     saved.insert("id", QUuid::createUuid().toString(QUuid::WithoutBraces));
@@ -411,16 +458,30 @@ bool Backend::saveRule(const QVariantMap &settings)
             oldMatch.insert("class", object.value("class"));
             if (!object.value("title").toString().isEmpty()) oldMatch.insert("title", object.value("title"));
         }
-        if (oldMatch == matchObject) {
-            if (!replaced) updated.append(saved);
+        const auto oldSettings = object.value("settings").toObject();
+        if (oldMatch == matchObject &&
+            oldSettings.value("classMatchMode").toString("exact") == settings.value("classMatchMode", "exact").toString() &&
+            oldSettings.value("titleMatchMode").toString("exact") == settings.value("titleMatchMode", "exact").toString()) {
+            if (!replaced) {
+                if (!object.value("id").toString().isEmpty()) saved.insert("id", object.value("id"));
+                for (const auto &key : {"name", "folder", "tags"})
+                    if (object.contains(key)) saved.insert(key, object.value(key));
+                updated.append(saved);
+            }
             replaced = true;
         } else updated.append(value);
     }
     if (!replaced) updated.append(saved);
     if (!commitRuleData(updated, true)) return false;
+    if (window.value("address").toString().isEmpty()) {
+        setStatus(tr("Persistent rule saved for an offline application. Open it to test the match."));
+        return true;
+    }
     QProcess live;
     live.start(m_hyprctl, {"eval", liveApplyCode(window, settings)});
-    if (!live.waitForStarted(1500) || !live.waitForFinished(3000) || live.exitCode() != 0) {
+    const bool finished = live.waitForStarted(1500) && live.waitForFinished(3000) && live.exitCode() == 0;
+    const auto response = live.readAllStandardOutput().trimmed();
+    if (!finished || (!response.isEmpty() && response != "ok")) {
         setStatus(QString("Saved the persistent rule, but could not update this window live: %1")
                       .arg(QString::fromLocal8Bit(live.readAllStandardError()).trimmed()));
         return false;
@@ -433,18 +494,13 @@ bool Backend::saveRule(const QVariantMap &settings)
 
 bool Backend::deleteRule(int index)
 {
-    const QString path = m_configDirectory + "/windowtuner.json";
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        setStatus("Could not read saved rules: " + file.errorString());
-        return false;
-    }
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
-    if (!document.isArray() || index < 0 || index >= document.array().size()) {
+    QJsonArray rules;
+    QString error;
+    if (!readRuleData(&rules, &error)) { setStatus(error); return false; }
+    if (index < 0 || index >= rules.size()) {
         setStatus("The selected saved rule is no longer available.");
         return false;
     }
-    QJsonArray rules = document.array();
     rules.removeAt(index);
     if (!commitRuleData(rules)) return false;
     setStatus("Saved rule removed. Hyprland reloaded.");
@@ -465,12 +521,50 @@ bool Backend::readRuleData(QJsonArray *rules, QString *error) const
         if (error) *error = parseError.errorString();
         return false;
     }
+    for (const auto &entry : doc.array()) {
+        const auto rule = entry.toObject();
+        if (!entry.isObject() || rule.value("class").toString().isEmpty() || !rule.value("settings").isObject()) {
+            if (error) *error = tr("Every saved rule needs a class and settings object. Existing data was left untouched.");
+            return false;
+        }
+    }
     *rules = doc.array();
     return true;
 }
 
-bool Backend::commitRuleData(const QJsonArray &rules, bool ensureInclude)
+bool Backend::commitRuleData(const QJsonArray &rules, bool ensureInclude, bool recordHistory)
 {
+    QDir().mkpath(m_configDirectory);
+    QLockFile lock(m_configDirectory + "/windowtuner.lock");
+    if (!lock.tryLock(0)) { setStatus("Another WindowTuner operation is writing rules."); return false; }
+    if (fingerprint() != m_diskFingerprint) {
+        setStatus("Configuration changed outside WindowTuner. Reload from disk before saving; nothing was overwritten.");
+        return false;
+    }
+    QFile journal(m_configDirectory + "/windowtuner-history.json");
+    if ((journal.exists() && !journal.open(QIODevice::ReadOnly)) ||
+        (journal.isOpen() && journal.readAll() != m_journalBytes) ||
+        (!m_journalBytes.isEmpty() && !QJsonDocument::fromJson(m_journalBytes).isObject())) {
+        setStatus(tr("History changed externally or is invalid. Restart or repair it before saving."));
+        return false;
+    }
+    for (const auto &path : {m_configDirectory + "/windowtuner.json", m_rulePath, m_hyprlandConfig}) {
+        QFile file(path);
+        if (file.exists() && !file.open(QIODevice::ReadOnly)) {
+            setStatus(tr("Cannot safely back up an unreadable configuration file.")); return false;
+        }
+    }
+    if (trialActive() && !revertTrial()) return false;
+    // Record the config errors that already exist. `configerrors` covers the
+    // whole configuration, so without this baseline one unrelated broken file
+    // would roll back every valid change.
+    QString errorBaseline;
+    QProcess baselineProcess;
+    baselineProcess.start(m_hyprctl, {"configerrors"});
+    if (baselineProcess.waitForStarted(1000) && baselineProcess.waitForFinished(2500) &&
+        baselineProcess.exitCode() == 0)
+        errorBaseline = QString::fromLocal8Bit(baselineProcess.readAllStandardOutput()).trimmed();
+    const QJsonObject before = snapshot(tr("Before rule change"));
     const auto readBytes = [](const QString &path, bool *exists) {
         QFile file(path);
         *exists = file.exists();
@@ -495,6 +589,8 @@ bool Backend::commitRuleData(const QJsonArray &rules, bool ensureInclude)
             previous = QJsonDocument::fromJson(oldData).array();
             updateSavedRules(previous);
         }
+        else updateSavedRules({});
+        m_diskFingerprint = fingerprint();
     };
     if (!writeRuleData(rules) || !writeRules(rules)) { restore(); return false; }
     if (ensureInclude && !ensureMainConfigIncludesRules()) { restore(); return false; }
@@ -510,13 +606,35 @@ bool Backend::commitRuleData(const QJsonArray &rules, bool ensureInclude)
     errors.start(m_hyprctl, {"configerrors"});
     if (errors.waitForStarted(1000) && errors.waitForFinished(2500) && errors.exitCode() == 0) {
         const QByteArray output = errors.readAllStandardOutput().trimmed();
-        if (!output.isEmpty() && output != "[]" && output != "No config errors found.") {
+        const QString text = QString::fromLocal8Bit(output);
+        const bool noErrors = output.isEmpty() || output == "[]" || text == "No config errors found.";
+        if (!noErrors && text != errorBaseline) {
             restore();
-            setStatus("Hyprland reported config errors; restored the previous rules and config: " + QString::fromLocal8Bit(output));
+            setStatus("Hyprland reported new config errors; restored the previous rules and config: " + text);
+            return false;
+        }
+    } else {
+        restore();
+        setStatus("Could not validate Hyprland configuration; restored the previous rules.");
+        return false;
+    }
+    updateSavedRules(rules);
+    m_diskFingerprint = fingerprint();
+    if (!m_replaying && recordHistory) {
+        const auto previousPast = m_past, previousFuture = m_future;
+        m_past.append(before);
+        while (m_past.size() > 50) m_past.removeFirst();
+        m_future = {};
+        if (!saveJournal()) {
+            m_past = previousPast; m_future = previousFuture;
+            restore();
+            setStatus(tr("Could not persist undo history; previous configuration restored."));
             return false;
         }
     }
-    updateSavedRules(rules);
+    emit safetyChanged();
+    m_lastSuccessfulSave = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    emit healthChanged();
     return true;
 }
 
@@ -568,6 +686,8 @@ bool Backend::moveRule(int index, int destination)
 
 bool Backend::updateRule(int index, const QVariantMap &settings)
 {
+    const auto problems = validateSettings(settings);
+    if (!problems.isEmpty()) { setStatus(problems.join("\n")); return false; }
     QJsonArray rules; QString error;
     if (!readRuleData(&rules, &error) || index < 0 || index >= rules.size()) {
         setStatus("Could not edit the rule: " + (error.isEmpty() ? QString("invalid rule index") : error));
@@ -575,7 +695,14 @@ bool Backend::updateRule(int index, const QVariantMap &settings)
     }
     QJsonObject rule = rules.at(index).toObject();
     QVariantMap updatedSettings = settings;
-    updatedSettings.insert("match", rule.value("match").toObject().toVariantMap());
+    const auto match = settings.value("match", rule.value("match").toObject().toVariantMap()).toMap();
+    if (match.value("class", match.value("initial_class")).toString().isEmpty()) {
+        setStatus(tr("A safe class match is required.")); return false;
+    }
+    updatedSettings.insert("match", match);
+    rule.insert("match", QJsonObject::fromVariantMap(match));
+    rule.insert("class", match.value("class", match.value("initial_class")).toString());
+    rule.insert("title", match.value("title", match.value("initial_title")).toString());
     rule.insert("settings", QJsonObject::fromVariantMap(updatedSettings));
     rules.replace(index, rule);
     if (!commitRuleData(rules)) return false;
@@ -593,24 +720,29 @@ QVariantMap Backend::loadRuleForEditing(int index)
     const QVariantMap match = rule.value("match").toMap();
     const QString klass = match.value("class", rule.value("class")).toString();
     const QString title = match.value("title", rule.value("title")).toString();
-    QRegularExpression classPattern(klass);
-    if (!classPattern.isValid()) classPattern = QRegularExpression(QRegularExpression::escape(klass));
+    auto settings = rule.value("settings").toMap();
+    settings.insert("match", match);
     int candidate = -1;
     for (int i = 0; i < m_windows.size(); ++i) {
         const QVariantMap window = m_windows.at(i).toMap();
-        if (!classPattern.match(window.value("class").toString()).hasMatch()) continue;
-        if (!title.isEmpty() && window.value("title").toString() != title) continue;
+        if (!matchWindow(window, settings).value("matched").toBool()) continue;
         candidate = i;
         break;
     }
     if (candidate < 0) {
+        m_offlineTarget = {{"class", klass}, {"title", title}, {"currentTitle", rule.value("name")},
+                           {"offline", true}, {"workspace", ""}, {"xdgTag", ""}, {"contentType", ""},
+                           {"size", QVariantList{0, 0}}, {"at", QVariantList{0, 0}}};
+        m_selectedIndex = -1;
+        emit selectedChanged();
         setStatus("Rule loaded, but no matching window is open; select its window before editing the match.");
     } else {
+        m_offlineTarget.clear();
         m_selectedIndex = candidate;
         emit selectedChanged();
         setStatus("Loaded saved rule into the editor. Save changes to update this rule.");
     }
-    return rule.value("settings").toMap();
+    return settings;
 }
 
 bool Backend::applySavedRule(int index)
@@ -620,20 +752,19 @@ bool Backend::applySavedRule(int index)
         return false;
     }
     const QVariantMap rule = m_savedRules.at(index).toMap();
-    const QString ruleClass = rule.value("class").toString();
-    const QString ruleTitle = rule.value("title").toString();
-    const QVariantMap settings = rule.value("settings").toMap();
-    const QString mode = settings.value("classMatchMode", "exact").toString();
-    QRegularExpression classRegex(mode == "exact" ? "^" + QRegularExpression::escape(ruleClass) + "$" :
-                                  mode == "contains" ? QRegularExpression::escape(ruleClass) : ruleClass);
+    if (!rule.value("enabled", true).toBool()) { setStatus(tr("Enable the rule before applying it.")); return false; }
+    QVariantMap settings = resolvePlacement(rule.value("settings").toMap());
+    settings.insert("match", rule.value("match"));
+    if (!validateSettings(settings).isEmpty()) { setStatus(validateSettings(settings).join("\n")); return false; }
     int applied = 0;
     for (const QVariant &entry : m_windows) {
         const QVariantMap window = entry.toMap();
-        if (!classRegex.match(window.value("class").toString()).hasMatch()) continue;
-        if (!ruleTitle.isEmpty() && window.value("title").toString() != ruleTitle) continue;
+        if (!matchWindow(window, settings).value("matched").toBool()) continue;
         QProcess live;
-        live.start(m_hyprctl, {"eval", liveApplyCode(window, settings)});
-        if (!live.waitForStarted(1500) || !live.waitForFinished(3000) || live.exitCode() != 0) {
+    live.start(m_hyprctl, {"eval", liveApplyCode(window, settings)});
+    const bool liveFinished = live.waitForStarted(1500) && live.waitForFinished(3000) && live.exitCode() == 0;
+    const auto liveResponse = live.readAllStandardOutput().trimmed();
+    if (!liveFinished || (!liveResponse.isEmpty() && liveResponse != "ok")) {
             setStatus("Could not apply the saved rule: " + QString::fromLocal8Bit(live.readAllStandardError()).trimmed());
             return false;
         }
@@ -653,38 +784,19 @@ QString Backend::exportRules() const
 
 bool Backend::importRules(const QString &json)
 {
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(json.toUtf8(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
-        setStatus("Import rejected: paste a JSON array of WindowTuner rules.");
-        return false;
-    }
     QJsonArray rules;
-    for (const QJsonValue &value : document.array()) {
-        if (!value.isObject()) { setStatus("Import rejected: each rule must be an object."); return false; }
-        QJsonObject rule = value.toObject();
-        if (rule.value("class").toString().isEmpty() || !rule.value("settings").isObject()) {
-            setStatus("Import rejected: every rule needs a class and settings object.");
-            return false;
-        }
-        if (!rule.value("match").isObject()) {
-            QJsonObject match{{"class", rule.value("class")}};
-            if (!rule.value("title").toString().isEmpty()) match.insert("title", rule.value("title"));
-            rule.insert("match", match);
-        }
-        if (rule.value("id").toString().isEmpty()) rule.insert("id", QUuid::createUuid().toString(QUuid::WithoutBraces));
-        if (rule.value("name").toString().isEmpty()) rule.insert("name", rule.value("class"));
-        if (!rule.contains("enabled")) rule.insert("enabled", true);
-        rules.append(rule);
-    }
+    QString error;
+    if (!decodeRules(json, &rules, &error)) { setStatus(error); return false; }
     if (!commitRuleData(rules, true)) return false;
     setStatus(QString("Imported %1 rule(s).").arg(rules.size()));
     return true;
 }
 
-bool Backend::writeRules(const QJsonArray &rules)
+QString Backend::ruleModule(const QJsonArray &rules, const QJsonObject &workspaces,
+                            const QJsonObject &monitors)
 {
     QStringList blocks;
+    QVariantList policies;
     for (const QJsonValue &value : rules) {
         const QJsonObject object = value.toObject();
         if (object.contains("enabled") && !object.value("enabled").toBool()) continue;
@@ -693,10 +805,49 @@ bool Backend::writeRules(const QJsonArray &rules)
         settings.insert("matchTitle", !window.value("title").toString().isEmpty());
         if (object.value("match").isObject())
             settings.insert("match", object.value("match").toObject().toVariantMap());
-        blocks.append(luaRule(window, settings));
+        const auto code = luaRule(window, settings, workspaces);
+        blocks.append(code);
+        const auto marker = QRegularExpression("tag = \"\\+(_windowtuner_[0-9a-f]+)\"").match(code);
+        if (marker.hasMatch())
+            policies.append(QVariantMap{{"tag", marker.captured(1)}, {"placement", settings.value("placement")}});
     }
+    const QString cleanup = "if _G.__windowtuner_placement_runtime then\n"
+        "  _G.__windowtuner_placement_runtime.stop()\n"
+        "  _G.__windowtuner_placement_runtime = nil\nend\n"
+        "if _G.__windowtuner_appspace_runtime then\n"
+        "  _G.__windowtuner_appspace_runtime.stop()\n"
+        "  _G.__windowtuner_appspace_runtime = nil\nend\n"
+        "_G.__windowtuner_ws = nil\n";
+    QString result = "-- Generated by WindowTuner. Edit rules in the app.\n\n" + cleanup;
+
+    const QJsonObject config = appSpaceModuleConfig(rules, workspaces, monitors);
+    const bool needsRuntime = !workspaces.isEmpty() || !monitors.isEmpty() ||
+        config.contains("startup") || config.contains("autostart");
+    if (needsRuntime) {
+        QFile source(":/appspace_runtime.lua");
+        if (!source.open(QIODevice::ReadOnly)) return {};
+        result += "\nlocal install_windowtuner_appspace = (function()\n" + QString::fromUtf8(source.readAll()) +
+            "\nend)()\n_G.__windowtuner_appspace_runtime = install_windowtuner_appspace(" +
+            luaValue(config.toVariantMap()) + ")\n_G.__windowtuner_ws = _G.__windowtuner_appspace_runtime and "
+            "_G.__windowtuner_appspace_runtime.workspace_id\n";
+    }
+
+    result += "\n" + blocks.join("\n\n") + "\n";
+    if (!policies.isEmpty()) {
+        QFile source(":/monitor_recovery.lua");
+        if (!source.open(QIODevice::ReadOnly)) return {};
+        result += "\nlocal install_windowtuner_recovery = (function()\n" + QString::fromUtf8(source.readAll()) +
+            "\nend)()\n_G.__windowtuner_placement_runtime = install_windowtuner_recovery(" + luaValue(policies) + ")\n";
+    }
+    return result;
+}
+
+bool Backend::writeRules(const QJsonArray &rules)
+{
+    const QString module = ruleModule(rules, workspaceData(), monitorData());
+    if (module.isEmpty()) { setStatus(tr("Could not load the bundled monitor recovery runtime.")); return false; }
     QString error;
-    if (!writeAtomically(m_rulePath, ("-- Generated by WindowTuner. Edit rules in the app.\n\n" + blocks.join("\n\n") + "\n").toUtf8(), &error)) {
+    if (!writeAtomically(m_rulePath, module.toUtf8(), &error)) {
         setStatus("Could not write the rules module: " + error);
         return false;
     }
@@ -756,7 +907,8 @@ bool Backend::ensureMainConfigIncludesRules()
         return false;
     }
     QByteArray content = file.readAll();
-    if (content.contains("require(\"hypr.windowtuner\")") || content.contains("require('hypr.windowtuner')"))
+    const QByteArray include = moduleInclude().toUtf8();
+    if (content.contains(include) || content.contains("require(\"hypr.windowtuner\")") || content.contains("require('hypr.windowtuner')"))
         return true;
 
     const QString backupPath = m_hyprlandConfig + ".windowtuner.bak";
@@ -765,13 +917,18 @@ bool Backend::ensureMainConfigIncludesRules()
         return false;
     }
     if (!content.endsWith('\n')) content.append('\n');
-    content.append("\n-- Load per-window rules saved by WindowTuner.\nrequire(\"hypr.windowtuner\")\n");
+    content.append("\n-- Load per-window rules saved by WindowTuner.\n" + include + "\n");
     QString error;
     if (!writeAtomically(m_hyprlandConfig, content, &error)) {
         setStatus("Rule file was saved, but hyprland.lua could not be updated: " + error);
         return false;
     }
     return true;
+}
+
+QString Backend::moduleInclude() const
+{
+    return "dofile(" + luaString(m_rulePath) + ")";
 }
 
 void Backend::setStatus(const QString &status)

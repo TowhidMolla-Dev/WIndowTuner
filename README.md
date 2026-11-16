@@ -1,163 +1,227 @@
 # WindowTuner
 
-WindowTuner is a Qt Quick desktop application for creating and managing
-persistent per-window rules for Hyprland's Lua configuration. Select an open
-window, configure its layout and behavior, inspect the generated Lua, then save
-and apply the rule.
+### Make every window behave the way you want.
 
-## What it does
+WindowTuner is a desktop app for building, previewing, and safely managing
+[Hyprland](https://hyprland.org/) window rules. Pick a window, choose how it
+looks and where it opens, review the change, then apply it—without hand-writing
+Lua.
 
-### Interface
+<p align="center">
+  <img src="docs/screenshots/windowtuner-control.png" alt="WindowTuner rule editor" width="840">
+</p>
 
-WindowTuner uses a dark, Omarchy-accent-aware studio layout inspired by
-Hyprforge's visual language: compact section navigation, layered surfaces,
-clear active states, grouped settings, and a persistent rule preview/status
-area. It remains a separate, focused window-rule editor rather than a Hyprforge
-clone.
+<p align="center">
+  <strong>Shape windows · place apps · keep changes reversible</strong>
+</p>
 
-### Discover and select windows
+---
 
-- Lists managed windows and refreshes the list periodically.
-- Search by application class, initial/current title, or workspace.
-- Pick a window directly from the screen using the crosshair picker.
-- Inspect the selected window's class, titles, workspace, monitor, process ID,
-  address, geometry, floating/fullscreen state, XWayland status, stable ID,
-  XDG tag, and content type.
-- Retains the selected window when the list refreshes, when possible.
+## Get started
 
-### Build window rules
+### What you need
 
-Rules use the selected window's initial class and, by default, its initial
-title. Class and title matching each support exact, contains, and regular
-expression modes. Optional conditions include workspace, XDG tag, XWayland,
-fullscreen, grouped state, and content type. A negative title expression can
-exclude a title when title matching is disabled. The preview shows the Lua
-rule before it is written.
+- Linux running a Hyprland session, with `hyprctl` available on `PATH`.
+- A Hyprland configuration entry point written in Lua and using Hyprland's Lua
+  API. WindowTuner does not generate legacy `.conf` rules.
+- To build from source: Qt 6 development packages (Quick, QML, Quick Controls),
+  `qmake6`, a C++17 compiler, and `make`.
 
-Layout and placement controls include:
+### Build and install
 
-- Floating, tiled, or keep-current layout.
-- Centering, explicit position, and custom size.
-- Minimum and maximum size constraints.
-- Workspace assignment and pinning.
-- Compact, picture-in-picture, and large-window presets.
+```sh
+git clone https://github.com/TowhidMolla-Dev/WIndowTuner.git
+cd WIndowTuner
+./bin/build
+./bin/install
+```
 
-Appearance and behavior controls include:
+Launch from your application menu, or run:
 
-- Active and inactive opacity.
-- Border size and corner rounding.
-- Blur and shadow overrides.
-- Initial focus, animations, dimming, and variable-refresh-rate behavior.
-- Persistent floating size.
+```sh
+windowtuner
+```
 
-### Manage saved rules
+The installer places the app in `~/.local/bin` and adds a desktop launcher and
+icon under `~/.local/share`. Make sure `~/.local/bin` is on your `PATH`.
 
-The saved-rules view supports loading a rule into the editor, updating the
-existing rule, duplicating, enabling/disabling, reordering, filtering, applying
-to matching open windows, importing/exporting JSON, and confirmed deletion.
-Potential overlaps are flagged conservatively for identical rules or broad
-same-class rules. This is a warning aid, not a complete proof that two
-arbitrary regular expressions overlap.
+### Your first rule
 
-Rule writes are atomic. Before changing the main Hyprland Lua config, the app
-creates `hyprland.lua.windowtuner.bak` if that backup does not already exist.
-After changes, it reloads Hyprland and checks `hyprctl configerrors`; failed
-validation restores the previous generated rules and config content.
+1. Select a window from **Windows**, or use the crosshair to pick one on screen.
+2. Choose a section: **Layout**, **Placement**, **Appearance**, or **Behavior**.
+3. Use **Preview** to check the result, then **Apply & save** to review the
+   generated change and apply it.
 
-## Requirements
+The review dialog shows what will change. Save is enabled only when the
+installed Hyprland parser accepts the generated configuration.
 
-- Linux with a running Hyprland session.
-- Hyprland's `hyprctl` available on `PATH`.
-- Qt 6 development packages with Quick, QML, and Quick Controls.
-- `qmake6`, a C++17 compiler, and `make`.
+---
 
-WindowTuner generates rules using the Hyprland Lua configuration API and
-expects the main config at `~/.config/hypr/hyprland.lua`. It adds
-`require("hypr.windowtuner")` to that file when needed. If your setup uses a
-different Lua entry point or configuration layout, review the generated config
-and adjust it before applying rules.
+## Shape and place windows
 
-## Build, test, and run
+Tune floating or tiled behavior, size, position, centering, workspace, opacity,
+borders, rounding, blur, shadow, focus, animations, dimming, VRR, and persistent
+floating size. Use the placement designer for anchors, margins, percentage-based
+sizing, and aspect-ratio locking.
 
-From the repository root:
+WindowTuner can also help with the rest of the workflow:
+
+- **Find a target:** search open windows by app, title, or workspace, or use the
+  on-screen picker.
+- **Know what a rule matches:** inspect the selected window against your draft
+  and saved WindowTuner rules before applying.
+- **Reuse settings:** save presets, organize rules into collections, and
+  preview a profile before activating it.
+- **Start from an app:** create an offline target from desktop-entry hints when
+  the app is not open.
+
+### Apps, workspaces, and displays
+
+The **Apps, workspaces, displays** tool brings app placement into one place:
+
+- Find running, pinned, and installed apps in a searchable, filterable list.
+  Select one to set its workspace, open quietly, launch at login, or limit its
+  workspace placement to windows opened during a startup time window.
+- Pin workspaces to a display, mark them always present, and see which apps are
+  assigned to each workspace.
+- Edit connected displays' mode, position, scale, and rotation. A changed
+  layout reverts after 15 seconds unless you keep it; leave WindowTuner open
+  while deciding.
+- Preview and import AppSpace rules, workspace pins, aliases, and display
+  layouts into WindowTuner's own files.
+
+This does not edit AppSpace's files. After importing, disable AppSpace or remove
+its generated module to avoid two tools placing the same apps. WindowTuner does
+not include AppSpace's bar widget/workspace strip or its drag-and-drop display
+canvas. App classes derived from desktop entries are hints; a running window's
+reported class is authoritative.
+
+<p align="center">
+  <img src="docs/screenshots/windowtuner-appspace.png" alt="App placement with workspace and login options" width="840">
+</p>
+
+Open **Tools and workflows** for safety, placement, inspection, presets,
+application management, compatibility checks, and the guided walkthrough.
+
+<p align="center">
+  <img src="docs/screenshots/windowtuner-tools.png" alt="Grouped Tools and workflows launcher" width="700">
+</p>
+
+---
+
+## Built to be reversible
+
+WindowTuner treats changing compositor configuration as something you should be
+able to inspect and undo:
+
+- **Review before saving.** See the generated module and main-config changes
+  before they are written.
+- **Validate with Hyprland.** Drafts are checked with the installed parser;
+  config errors introduced by a change trigger rollback.
+- **Recover changes.** Undo/redo, named snapshots, atomic writes, a first-edit
+  backup, and external-edit detection are built in.
+- **Try geometry temporarily.** A 15-second trial changes only the selected
+  window's geometry and can be reverted without saving a rule.
+- **Keep recovery scoped.** Opt-in monitor recovery repositions eligible windows
+  after a display disconnect/reconnect while WindowTuner is closed. It avoids
+  windows that appear fullscreen, tiled, hidden, grouped, conflicting, or
+  manually moved.
+
+A parser accepting Lua does not guarantee that every property behaves the same
+on every Hyprland version or application. Review the preview and compatibility
+audit, especially before using unfamiliar properties.
+
+---
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `Alt+1`–`Alt+5` | Switch between editor sections |
+| `Ctrl+F` or `Ctrl+K` | Focus search |
+| `Ctrl+R` | Refresh open windows |
+| `Ctrl+S` | Review a new rule or update |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo when the draft is clean |
+| `Ctrl+Q` | Quit, with an unsaved-draft warning |
+| `?` | Open the shortcut reference |
+| `Escape` | Cancel editing or dismiss the screen picker |
+
+---
+
+## Configuration and privacy
+
+WindowTuner expects `~/.config/hypr/hyprland.lua` by default. Choose another
+Lua entry point in **Compatibility and health** if your setup uses one. Confirm
+that your running Hyprland session actually loads that entry point.
+
+| File | Purpose |
+| --- | --- |
+| `~/.config/hypr/windowtuner.json` | Saved rules |
+| `~/.config/hypr/windowtuner.lua` | Generated Hyprland Lua module |
+| `~/.config/hypr/windowtuner-library.json` | Presets, profiles, preferences, workspace pins, and display layouts |
+| `~/.config/hypr/windowtuner-history.json` | Local configuration history and snapshots |
+| `~/.config/hypr/hyprland.lua.windowtuner.bak` | First-edit backup of the main config |
+
+These files stay local. Diagnostics omit window titles, classes, paths, rule
+bodies, raw compositor errors, and monitor identifiers. `inspect` and `export`
+can include private local data—review their output before sharing it.
+
+---
+
+## Read-only command line
+
+The CLI can check configuration and inspect or export local rules without
+opening the GUI:
+
+```sh
+windowtuner check --json
+windowtuner diagnostics --json
+windowtuner inspect --json
+windowtuner export --json
+windowtuner verify --settings-file settings.json --json
+```
+
+`check` and `verify` return a nonzero exit code when a check fails. The CLI does
+not mutate configuration.
+
+---
+
+## Build and test from source
 
 ```sh
 ./bin/build
 ./bin/test
-./build/windowtuner
+lua tests/appspace.lua
+lua tests/monitor_recovery.lua
+python3 tests/cli_smoke.py
 ```
 
-The test suite covers client parsing, window picking, Lua generation, matching,
-rule persistence and management, import/export, and rollback after simulated
-Hyprland config validation errors. GUI smoke testing without a display server
-can be done with:
+The GUI/backend suite runs against disposable configuration. `./bin/test-live`
+is an optional test inside a Hyprland session: it creates and changes only its
+own test window, and never writes rules or reloads Hyprland. It may skip if the
+compositor reports that test window as fullscreen, because geometry then cannot
+be observed safely.
 
-```sh
-QT_QPA_PLATFORM=offscreen timeout 5s ./build/windowtuner
-```
+---
 
-The application is expected to keep running until the timeout; inspect stderr
-for QML errors.
+## Known boundaries
 
-### Keyboard shortcuts
+- Legacy Hyprland `.conf` rule generation is not supported; WindowTuner targets
+  Lua configuration and native `hl.*` APIs.
+- Local regex inspection uses Qt/PCRE and approximates Hyprland's RE2 matching.
+  Conflict detection is conservative, not a proof that arbitrary expressions
+  overlap.
+- Desktop-entry classes can differ from an app's actual Wayland app ID. Guesses
+  are labelled, and WindowTuner does not launch apps just to verify a class.
+- Monitor recovery does not switch profiles or survive a full Hyprland restart.
+  Display-layout keep/revert needs WindowTuner to stay open; closing it before
+  confirmation leaves the applied layout in place.
+- AppSpace import does not disable the plugin for you. The bar widget,
+  workspace strip, drag-and-drop display canvas, and app-launch class discovery
+  are not included.
 
-- `Alt+1` through `Alt+5`: switch between Layout, Placement, Appearance,
-  Behavior, and Rules.
-- `Ctrl+F`: focus the window or saved-rule filter.
-- `Ctrl+R`: refresh the open-window list.
-- `Ctrl+S`: save a new rule or update the rule currently being edited.
-- `Escape`: cancel rule editing or dismiss the screen picker.
-
-## Install
-
-Install the user-local executable, desktop launcher, and icon:
-
-```sh
-./bin/install
-```
-
-The launcher is installed to `~/.local/share/applications/`, and the executable
-to `~/.local/bin/windowtuner`. Ensure `~/.local/bin` is on `PATH`.
-
-Desktop launcher and icon assets are in `pkgbuild/`; a PKGBUILD is not included.
-
-## Configuration and data
-
-WindowTuner stores its rule collection at:
-
-```text
-~/.config/hypr/windowtuner.json
-```
-
-It compiles enabled rules into:
-
-```text
-~/.config/hypr/windowtuner.lua
-```
-
-The main Lua config is updated to require the generated module. A one-time
-backup is stored beside it as `hyprland.lua.windowtuner.bak`. Back up your
-Hyprland configuration before experimenting with window rules.
-
-## OpenCode progress sidebar
-
-This repository includes a project-local OpenCode TUI plugin under
-`.opencode/plugins/windowtuner-tasks/`. When OpenCode is launched for this
-project, the plugin renders `TODO.md` in the native sidebar and watches the file
-for changes. The checklist is the progress source of truth; completed items
-are checked there as features are implemented and verified.
-
-## Known limitations
-
-- Monitor-specific placement, window grouping, percentage geometry, additional
-  visual effects, undo/history, and dry-run/diff are not implemented yet; see
-  [`TODO.md`](TODO.md) for the roadmap.
-- Conflict detection is intentionally conservative and does not solve general
-  regular-expression overlap.
-- Hyprland rule properties and Lua APIs can vary by version. Check
-  `hyprctl configerrors` after applying rules and review the generated preview.
-- Identical class/title windows cannot be distinguished by a class/title rule;
-  use additional match conditions when supported and appropriate.
+For detailed scope and verification evidence, see the
+[implementation report](docs/one-stop-report.md).
 
 ## License
 

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Explicit live test: creates and changes only its own test window.
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+mkdir -p "$ROOT/build/live-tests"
+cd "$ROOT/build/live-tests"
+qmake6 "$ROOT/tests/live_geometry.pro"
+make -j"$(nproc)"
+QT_QPA_PLATFORM=wayland QT_QUICK_BACKEND=software ./windowtuner_live_tests "$@"

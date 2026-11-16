@@ -1,5 +1,16 @@
 <RCC>
   <qresource prefix="/">
     <file alias="Main.qml">Main.qml</file>
+    <file alias="SafetyDialog.qml">SafetyDialog.qml</file>
+    <file alias="PlacementDesigner.qml">PlacementDesigner.qml</file>
+    <file alias="InspectorDialog.qml">InspectorDialog.qml</file>
+    <file alias="WorkflowDialog.qml">WorkflowDialog.qml</file>
+    <file alias="ManagementDialog.qml">ManagementDialog.qml</file>
+    <file alias="AppSpaceDialog.qml">AppSpaceDialog.qml</file>
+    <file alias="HealthDialog.qml">HealthDialog.qml</file>
+    <file alias="WelcomeDialog.qml">WelcomeDialog.qml</file>
+    <file alias="StudioDialog.qml">StudioDialog.qml</file>
+    <file alias="monitor_recovery.lua">monitor_recovery.lua</file>
+    <file alias="appspace_runtime.lua">appspace_runtime.lua</file>
   </qresource>
 </RCC>

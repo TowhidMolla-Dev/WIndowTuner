@@ -7,36 +7,316 @@ ApplicationWindow {
     id: win
     width: 1120
     height: 820
-    minimumWidth: 860
-    minimumHeight: 680
+    minimumWidth: Math.round(860 * textScale)
+    minimumHeight: Math.round(680 * textScale)
     visible: true
     title: qsTr("WindowTuner")
-    color: "#0e1110"
+    color: "#090f13"
 
-    // Keep WindowTuner visually aligned with Omarchy/Hyprforge surfaces while
-    // retaining its own focused window-rule workflow.
-    readonly property color surface: "#151a18"
-    readonly property color raisedSurface: "#1c2320"
-    readonly property color outline: "#29332e"
-    readonly property color mutedForeground: "#98a59e"
+    // Omarchy Control-inspired shell; accents still follow the user's theme.
+    readonly property color surface: "#0f171d"
+    readonly property color raisedSurface: "#15212a"
+    readonly property color outline: "#24313b"
+    readonly property color mutedForeground: "#93a4b3"
     readonly property var sections: [
         { title: qsTr("Layout"), icon: "▦", subtitle: qsTr("Shape and size this window") },
         { title: qsTr("Placement"), icon: "⌖", subtitle: qsTr("Choose where and how it appears") },
         { title: qsTr("Appearance"), icon: "◐", subtitle: qsTr("Tune transparency and surfaces") },
         { title: qsTr("Behavior"), icon: "⌘", subtitle: qsTr("Set focus and performance behavior") },
-        { title: qsTr("Rules"), icon: "☷", subtitle: qsTr("Manage saved window rules") }
+        { title: qsTr("Saved Rules"), icon: "☷", subtitle: qsTr("Manage persistent window rules") }
     ]
 
     Material.theme: Material.Dark
     Material.accent: theme.accent
     Material.roundedScale: Material.Small
+    font.pixelSize: 13
+    property real textScale: backend.preference("textScale", 1.0)
+    property bool advancedMode: backend.preference("advanced", false)
+    onAdvancedModeChanged: if (editorReady) backend.setPreference("advanced", advancedMode)
+
+    component ModuleHeading: RowLayout {
+        id: heading
+        property alias title: headingLabel.text
+        property string explanation
+        property string helpKey
+        readonly property bool helpOpen: helpTip.opened
+        objectName: "moduleHelp_" + helpKey
+        Layout.fillWidth: true
+        spacing: 8
+        Label {
+            id: headingLabel
+            Layout.fillWidth: true
+            font.pixelSize: 15
+            font.bold: true
+            wrapMode: Text.WordWrap
+        }
+        ToolButton {
+            id: infoButton
+            objectName: "moduleInfoButton"
+            text: "ⓘ"
+            Layout.preferredWidth: 32
+            Layout.preferredHeight: 32
+            hoverEnabled: true
+            focusPolicy: Qt.StrongFocus
+            Accessible.name: qsTr("About %1").arg(heading.title)
+            Accessible.description: heading.explanation
+            onClicked: forceActiveFocus()
+            Keys.onEscapePressed: focus = false
+            contentItem: Label {
+                text: infoButton.text
+                color: infoButton.hovered || infoButton.activeFocus ? theme.accent : win.mutedForeground
+                font.pixelSize: 18
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            background: Rectangle {
+                radius: 6
+                color: infoButton.hovered || infoButton.activeFocus ? win.raisedSurface : "transparent"
+                border.color: infoButton.activeFocus ? theme.accent : "transparent"
+            }
+            ToolTip {
+                id: helpTip
+                parent: infoButton
+                x: infoButton.width - width
+                y: infoButton.height + 6
+                margins: 12
+                visible: infoButton.visible && (infoButton.hovered || infoButton.activeFocus)
+                delay: 250
+                timeout: -1
+                width: Math.min(360, win.width - 48)
+                text: heading.explanation
+                contentItem: Label {
+                    text: helpTip.text
+                    wrapMode: Text.WordWrap
+                    color: "#e0e8ef"
+                    font.pixelSize: Math.round(12 * win.textScale)
+                    lineHeight: 1.2
+                }
+                background: Rectangle { radius: 8; color: win.raisedSurface; border.color: win.outline }
+            }
+        }
+    }
+
+    component ToolLauncherTile: Button {
+        required property string actionId
+        required property string glyph
+        required property string title
+        required property string detail
+        objectName: "toolLauncher_" + actionId
+        Layout.fillWidth: true
+        Layout.preferredHeight: 58
+        hoverEnabled: true
+        onClicked: win.openTool(actionId)
+        background: Rectangle {
+            radius: 9
+            color: parent.hovered ? Qt.alpha(theme.accent, 0.11) : "#121e27"
+            border.color: parent.hovered ? Qt.alpha(theme.accent, 0.48) : "#263642"
+        }
+        contentItem: RowLayout {
+            spacing: 10
+            Rectangle {
+                Layout.preferredWidth: 34
+                Layout.preferredHeight: 34
+                radius: 10
+                color: Qt.alpha(theme.accent, parent.parent.hovered ? 0.2 : 0.12)
+                Label {
+                    anchors.centerIn: parent
+                    text: parent.parent.parent.glyph
+                    color: theme.accent
+                    font.pixelSize: 17
+                }
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 2
+                Label {
+                    Layout.fillWidth: true
+                    text: parent.parent.parent.title
+                    color: "#e2e9ee"
+                    font.pixelSize: 11
+                    font.bold: true
+                    elide: Text.ElideRight
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: parent.parent.parent.detail
+                    color: "#82939f"
+                    font.pixelSize: 9
+                    elide: Text.ElideRight
+                }
+            }
+            Label { text: "›"; color: "#657784"; font.pixelSize: 18 }
+        }
+    }
 
     property string layoutMode: "floating"
     property int category: 0
+    property bool windowsPage: true
+    property string windowFilter: ""
+    property string ruleFilter: ""
     property int editingRuleIndex: -1
+    property string editingRuleId: ""
+    readonly property var editingRule: backend.savedRules.find(rule => rule.id === editingRuleId) || ({})
+    readonly property bool editTargetAvailable: !editingRuleId || !!editingRule.id
     property bool previewExpanded: false
+    property bool editorReady: false
+    property string cleanDraft: ""
+    readonly property bool dirty: editorReady && JSON.stringify(options()) !== cleanDraft
+    property bool allowClose: false
+    property int pendingWindow: -1
+    property int pendingRule: -1
+    property bool discardOnly: false
+    property var editorMatch: ({})
+    property bool groupApplications: true
+    readonly property var fieldErrors: editorReady ? backend.validationDetails(options()) : ({})
+    property bool settingsSearch: false
+    property string settingsFilter: ""
+    readonly property var settingIndex: [
+        {title: qsTr("Window layout · floating, tiled, presets"), key: "layout", page: 0},
+        {title: qsTr("Size & position · width, height, center"), key: "size", page: 0},
+        {title: qsTr("Size constraints · minimum, maximum"), key: "constraints", page: 0, advanced: true},
+        {title: qsTr("Workspace & visibility · pin"), key: "workspace", page: 1},
+        {title: qsTr("Rule matching · class, title, regex"), key: "matching", page: 1, advanced: true},
+        {title: qsTr("Opacity · transparency"), key: "opacity", page: 2},
+        {title: qsTr("Window decoration · border, rounding"), key: "decoration", page: 2},
+        {title: qsTr("Visual effects · blur, shadow"), key: "effects", page: 2},
+        {title: qsTr("Focus & interaction"), key: "focus", page: 3},
+        {title: qsTr("Performance & persistence · animations, VRR"), key: "performance", page: 3},
+        {title: qsTr("Saved rules · organize, import, export"), key: "saved", page: 4}
+    ]
+    readonly property var settingResults: settingIndex.filter(item => item.title.toLocaleLowerCase().indexOf(settingsFilter.toLocaleLowerCase()) >= 0)
+    function jumpToSetting(result) {
+        if (result.advanced) advancedMode = true
+        navigate(result.page)
+        settingsResultsPopup.close()
+        function locate(parent) {
+            if (parent.objectName === "moduleHelp_" + result.key) return parent
+            for (let i = 0; i < parent.children.length; ++i) {
+                const found = locate(parent.children[i])
+                if (found) return found
+            }
+            return null
+        }
+        Qt.callLater(function() {
+            const heading = locate(win.contentItem)
+            if (heading && settingsScroll.contentItem.contentItem)
+                settingsScroll.contentItem.contentY = Math.max(0, heading.mapToItem(settingsScroll.contentItem.contentItem, 0, 0).y - 16)
+        })
+    }
+
+    function openTool(actionId) {
+        toolsMenu.close()
+        switch (actionId) {
+        case "safety": safetyDialog.open(); break
+        case "placement": placementDesigner.open(); break
+        case "inspect": inspectorDialog.open(); break
+        case "workflows": workflowDialog.open(); break
+        case "management": managementDialog.open(); break
+        case "appspace": appSpaceDialog.open(); break
+        case "health": healthDialog.open(); break
+        case "welcome": welcomeDialog.step = 0; welcomeDialog.open(); break
+        case "shortcuts": shortcutsDialog.open(); break
+        }
+    }
+    function markClean() { cleanDraft = JSON.stringify(options()) }
+    function chooseWindow(index) {
+        if (dirty) { pendingWindow = index; pendingRule = -1; discardOnly = false; discardDialog.open(); return }
+        backend.selectWindow(index); editingRuleIndex = -1; editingRuleId = ""; editorMatch = ({})
+        classPatternField.text = backend.selectedWindow.currentClass || backend.selectedWindow["class"] || ""
+        titlePatternField.text = backend.selectedWindow.currentTitle || backend.selectedWindow.title || ""
+        navigate(0); markClean()
+    }
+    function requestSave() {
+        if (!editTargetAvailable) { missingRuleNotice.open(); return }
+        saveReview.pending = options()
+        saveReview.ruleIndex = editingRuleId ? backend.savedRules.findIndex(rule => rule.id === editingRuleId) : -1
+        saveReview.review = backend.reviewChanges(saveReview.pending, saveReview.ruleIndex)
+        saveReview.open()
+    }
+    StudioDialog {
+        id: missingRuleNotice
+        anchors.centerIn: parent; modal: true
+        title: qsTr("The rule being edited no longer exists")
+        standardButtons: Dialog.Close
+        Label { width: 360; wrapMode: Text.WordWrap; text: qsTr("No other rule will be updated. Cancel edit or choose a target to deliberately create a new rule.") }
+    }
+    function discardCurrentDraft() { pendingWindow = -1; pendingRule = -1; discardOnly = true; discardDialog.open() }
+    onClosing: function(close) {
+        if (backend.trialActive && !backend.revertTrial()) { close.accepted = false; return }
+        if (dirty && !allowClose) { close.accepted = false; pendingWindow = -1; pendingRule = -1; discardOnly = false; discardDialog.open() }
+    }
+    StudioDialog {
+        id: discardDialog
+        objectName: "discardDialog"
+        anchors.centerIn: parent
+        modal: true
+        title: qsTr("Unsaved changes")
+        standardButtons: Dialog.Discard | Dialog.Cancel
+        Label { width: 360; wrapMode: Text.WordWrap; text: qsTr("Discard this draft? Your saved rules will not be changed.") }
+        onDiscarded: {
+            win.applySettings(JSON.parse(win.cleanDraft))
+            win.markClean()
+            if (win.discardOnly) { win.discardOnly = false; return }
+            if (win.pendingRule >= 0) win.loadRule(win.pendingRule)
+            else if (win.pendingWindow >= 0) win.chooseWindow(win.pendingWindow)
+            else { win.allowClose = true; win.close() }
+        }
+    }
+    StudioDialog {
+        id: saveReview
+        objectName: "saveReview"
+        property var pending: ({})
+        property var review: ({})
+        property var verification: ({})
+        property int ruleIndex: -1
+        anchors.centerIn: parent
+        width: Math.min(win.width - 60, 720)
+        height: Math.min(win.height - 60, 620)
+        modal: true
+        title: qsTr("Review before applying")
+        standardButtons: Dialog.Save | Dialog.Cancel
+        onOpened: {
+            verification = backend.verifyDraft(pending)
+            standardButton(Dialog.Save).enabled = (review.errors || []).length === 0 && verification.ok === true
+        }
+        contentItem: ScrollView {
+            clip: true
+            TextArea {
+                objectName: "changeReviewText"
+                readOnly: true; selectByMouse: true; wrapMode: TextEdit.WrapAnywhere
+                text: (saveReview.review.errors || []).join("\n") + "\n" + (saveReview.review.summary || "") +
+                      "\n\n" + qsTr("Installed-parser validation: %1").arg(saveReview.verification.status || "unverified") +
+                      (saveReview.verification.ok ? "" : "\n" + (saveReview.verification.details || "")) +
+                      "\n\n" + (saveReview.review.diff || "") + "\n\n" +
+                      qsTr("Main config: WindowTuner may add its module include. Reload validation runs after saving.")
+            }
+        }
+        onAccepted: {
+            const ok = ruleIndex >= 0 ? backend.updateRule(ruleIndex, pending) : backend.saveRule(pending)
+            if (ok) { win.editingRuleIndex = -1; win.editingRuleId = ""; win.markClean() }
+        }
+    }
+    SafetyDialog { id: safetyDialog; host: win }
+    PlacementDesigner { id: placementDesigner; host: win }
+    InspectorDialog { id: inspectorDialog; host: win }
+    WorkflowDialog { id: workflowDialog; host: win }
+    ManagementDialog { id: managementDialog; host: win }
+    AppSpaceDialog { id: appSpaceDialog; host: win }
+    HealthDialog { id: healthDialog; host: win }
+    WelcomeDialog { id: welcomeDialog; host: win }
+    StudioDialog {
+        id: shortcutsDialog
+        objectName: "shortcutsDialog"
+        anchors.centerIn: parent; modal: true; title: qsTr("Keyboard shortcuts")
+        standardButtons: Dialog.Close
+        Label { width: 440; wrapMode: Text.WordWrap; text: qsTr("Ctrl+S — review and save\nCtrl+K / Ctrl+F — focus search\nCtrl+R — refresh windows\nAlt+1–5 — settings sections\nCtrl+Z / Ctrl+Shift+Z — configuration undo/redo when draft is clean\nTab / Shift+Tab — move focus\nEscape — dismiss dialogs or leave edit mode\n? — this help\nCtrl+Q — quit (asks about unsaved changes)") }
+    }
+    function startOfflineTarget(withTitle) {
+        editingRuleIndex = -1; editingRuleId = ""; editorMatch = ({}); classPatternField.text = ""; titlePatternField.text = ""
+        titleMatch.checked = withTitle; navigate(1); markClean()
+    }
     property var visibleWindows: {
-        const needle = windowSearch.text.trim().toLocaleLowerCase()
+        const needle = windowFilter.trim().toLocaleLowerCase()
         const rows = backend.windows
         const result = []
         for (let i = 0; i < rows.length; ++i) {
@@ -45,18 +325,20 @@ ApplicationWindow {
             if (!needle || searchable.indexOf(needle) !== -1) {
                 const item = Object.assign({}, row)
                 item.sourceIndex = i
+                item.appGroup = row["class"] || ""
                 result.push(item)
             }
         }
+        if (groupApplications) result.sort((a, b) => a.appGroup.localeCompare(b.appGroup))
         return result
     }
     property var visibleRules: {
-        const needle = savedRuleSearch.text.trim().toLocaleLowerCase()
+        const needle = ruleFilter.trim().toLocaleLowerCase()
         const result = []
         const rows = backend.savedRules
         for (let i = 0; i < rows.length; ++i) {
             const row = rows[i]
-            const text = ((row.name || "") + " " + (row["class"] || "") + " " + (row.title || "")).toLocaleLowerCase()
+            const text = ((row.name || "") + " " + (row["class"] || "") + " " + (row.title || "") + " " + (row.folder || "") + " " + (row.tags || []).join(" ")).toLocaleLowerCase()
             if (!needle || text.indexOf(needle) !== -1) {
                 const item = Object.assign({}, row)
                 item.sourceIndex = i
@@ -68,16 +350,23 @@ ApplicationWindow {
 
     function options() {
         const target = backend.selectedWindow
-        const match = {}
-        if (target["class"]) match["class"] = target["class"]
-        if (titleMatch.checked && target.title) match.title = target.title
-        if (workspaceMatch.checked && target.workspace) match.workspace = target.workspace
-        if (xdgTagMatch.checked && target.xdgTag) match.xdg_tag = target.xdgTag
-        if (xwaylandMatch.checked) match.xwayland = target.xwayland
-        if (fullscreenMatch.checked) match.fullscreen = target.fullscreen !== 0
-        if (groupMatch.checked) match.group = target.grouped
-        if (contentMatch.checked) match.content = target.contentType
-        return {
+        const match = Object.assign({}, editorMatch)
+        if (target["class"]) match["class"] = classPatternField.text || editorMatch["class"] || target["class"]
+        function condition(key, enabled, value) {
+            if (!enabled) delete match[key]
+            else if (editorMatch[key] !== undefined) match[key] = editorMatch[key]
+            else if (value !== undefined && value !== "") match[key] = value
+        }
+        condition("title", titleMatch.checked, titlePatternField.text || target.title)
+        if (titleMatch.checked && titlePatternField.text) match.title = titlePatternField.text
+        condition("workspace", workspaceMatch.checked, target.workspace)
+        condition("xdg_tag", xdgTagMatch.checked, target.xdgTag)
+        condition("xwayland", xwaylandMatch.checked, !!target.xwayland)
+        condition("fullscreen", fullscreenMatch.checked, target.fullscreen !== 0)
+        condition("group", groupMatch.checked, !!target.grouped)
+        condition("content", contentMatch.checked, target.contentType)
+        return backend.resolvePlacement({
+            placement: placementDesigner.placement,
             layout: layoutMode,
             center: centerBox.checked,
             width: widthField.value,
@@ -112,16 +401,34 @@ ApplicationWindow {
             borderEnabled: borderBox.checked,
             borderSize: borderSize.value,
             workspace: workspaceField.text
-        }
+        })
     }
 
     function refreshPreview() { preview.text = backend.previewRule(options()) }
+    function navigate(section) {
+        windowsPage = section < 0
+        if (section >= 0) category = section
+        headerSearch.text = !windowsPage && category === 4 ? ruleFilter : windowFilter
+    }
     function loadRule(index) {
+        if (dirty) { pendingRule = index; pendingWindow = -1; discardOnly = false; discardDialog.open(); return }
         const saved = backend.loadRuleForEditing(index)
         if (!saved || Object.keys(saved).length === 0) return
-        category = 0
-        const match = saved.match || {}
+        navigate(0)
         editingRuleIndex = index
+        editingRuleId = backend.savedRules[index].id || ""
+        applySettings(saved)
+        markClean()
+    }
+    function restorePreset(settings) {
+        applySettings(Object.assign({}, options(), settings))
+        refreshPreview()
+    }
+    function applySettings(saved) {
+        const match = saved.match || {}
+        editorMatch = match
+        classPatternField.text = match["class"] || ""
+        titlePatternField.text = match.title || ""
         layoutMode = saved.layout || "floating"
         widthField.value = saved.width === undefined ? 600 : saved.width
         heightField.value = saved.height === undefined ? 420 : saved.height
@@ -159,8 +466,9 @@ ApplicationWindow {
         activeOpacity.value = saved.opacityActive === undefined ? 1 : saved.opacityActive
         inactiveOpacity.value = saved.opacityInactive === undefined ? 0.9 : saved.opacityInactive
         borderBox.checked = !!saved.borderEnabled
-        borderSize.value = saved.borderSize || 2
+        borderSize.value = saved.borderSize === undefined ? 2 : saved.borderSize
         workspaceField.text = saved.workspace || ""
+        placementDesigner.placement = saved.placement || {enabled: false}
         refreshPreview()
     }
     function applyPreset(width, height, centered, x, y) {
@@ -174,7 +482,7 @@ ApplicationWindow {
         refreshPreview()
     }
 
-    Dialog {
+    StudioDialog {
         id: deleteRuleDialog
         property int ruleIndex: -1
         anchors.centerIn: parent
@@ -189,7 +497,7 @@ ApplicationWindow {
         onAccepted: backend.deleteRule(ruleIndex)
     }
 
-    Dialog {
+    StudioDialog {
         id: rulesDataDialog
         property bool importing: false
         anchors.centerIn: parent
@@ -228,7 +536,7 @@ ApplicationWindow {
             width: pickHint.implicitWidth + 52
             height: pickHint.implicitHeight + 34
             radius: 13
-        color: win.raisedSurface
+            color: win.raisedSurface
             border.color: theme.accent
             Text {
                 id: pickHint
@@ -258,29 +566,33 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+S"
         context: Qt.ApplicationShortcut
-        onActivated: {
-            if (win.editingRuleIndex >= 0) {
-                if (backend.updateRule(win.editingRuleIndex, win.options())) win.editingRuleIndex = -1
-            } else if (backend.selectedIndex >= 0) backend.saveRule(win.options())
-        }
+        onActivated: win.requestSave()
     }
-    Shortcut { sequence: "Ctrl+F"; context: Qt.ApplicationShortcut; onActivated: { win.category === 4 ? savedRuleSearch.forceActiveFocus() : windowSearch.forceActiveFocus(); (win.category === 4 ? savedRuleSearch : windowSearch).selectAll() } }
-    Shortcut { sequence: "Escape"; context: Qt.ApplicationShortcut; enabled: win.editingRuleIndex >= 0; onActivated: win.editingRuleIndex = -1 }
-    Shortcut { sequence: "Alt+1"; context: Qt.ApplicationShortcut; onActivated: win.category = 0 }
-    Shortcut { sequence: "Alt+2"; context: Qt.ApplicationShortcut; onActivated: win.category = 1 }
-    Shortcut { sequence: "Alt+3"; context: Qt.ApplicationShortcut; onActivated: win.category = 2 }
-    Shortcut { sequence: "Alt+4"; context: Qt.ApplicationShortcut; onActivated: win.category = 3 }
-    Shortcut { sequence: "Alt+5"; context: Qt.ApplicationShortcut; onActivated: win.category = 4 }
+    Shortcut { sequence: "Ctrl+F"; context: Qt.ApplicationShortcut; onActivated: { headerSearch.forceActiveFocus(); headerSearch.selectAll() } }
+    Shortcut { sequence: "Ctrl+K"; context: Qt.ApplicationShortcut; onActivated: { headerSearch.forceActiveFocus(); headerSearch.selectAll() } }
+    Shortcut { sequence: "Escape"; context: Qt.ApplicationShortcut; enabled: win.editingRuleIndex >= 0; onActivated: { win.editingRuleIndex = -1; win.editingRuleId = "" } }
+    Shortcut { sequence: "Alt+1"; context: Qt.ApplicationShortcut; onActivated: win.navigate(0) }
+    Shortcut { sequence: "Alt+2"; context: Qt.ApplicationShortcut; onActivated: win.navigate(1) }
+    Shortcut { sequence: "Alt+3"; context: Qt.ApplicationShortcut; onActivated: win.navigate(2) }
+    Shortcut { sequence: "Alt+4"; context: Qt.ApplicationShortcut; onActivated: win.navigate(3) }
+    Shortcut { sequence: "Alt+5"; context: Qt.ApplicationShortcut; onActivated: win.navigate(4) }
+    Shortcut { sequences: [StandardKey.Undo]; context: Qt.ApplicationShortcut; enabled: !win.dirty; onActivated: backend.undo() }
+    Shortcut { sequences: [StandardKey.Redo]; context: Qt.ApplicationShortcut; enabled: !win.dirty; onActivated: backend.redo() }
+    Shortcut { sequence: "?"; context: Qt.ApplicationShortcut; onActivated: shortcutsDialog.open() }
+    Shortcut { sequence: "Ctrl+Q"; context: Qt.ApplicationShortcut; onActivated: win.close() }
 
     ColumnLayout {
-        anchors.fill: parent
+        width: win.width / win.textScale
+        height: win.height / win.textScale
+        scale: win.textScale
+        transformOrigin: Item.TopLeft
         spacing: 0
 
         // A restrained app bar separates the product identity from the task.
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 68
-            color: "#111613"
+            Layout.preferredHeight: 56
+            color: "#080e12"
             border.color: win.outline
             border.width: 1
 
@@ -288,22 +600,59 @@ ApplicationWindow {
                 anchors.fill: parent
                 anchors.leftMargin: 22
                 anchors.rightMargin: 20
-                spacing: 13
+                spacing: 12
 
                 Rectangle {
-                    Layout.preferredWidth: 36
-                    Layout.preferredHeight: 36
-                    radius: 11
-                    color: Qt.alpha(theme.accent, 0.14)
-                    border.color: Qt.alpha(theme.accent, 0.35)
-                    Text { anchors.centerIn: parent; text: "✦"; color: theme.accent; font.bold: true; font.pixelSize: 19 }
+                    Layout.preferredWidth: 24
+                    Layout.preferredHeight: 24
+                    color: "transparent"
+                    Text { anchors.centerIn: parent; text: "☷"; color: theme.accent; font.pixelSize: 22 }
                 }
                 ColumnLayout {
                     spacing: 1
-                    Label { text: qsTr("WindowTuner"); font.pixelSize: 18; font.bold: true }
-                    Label { text: qsTr("WINDOW RULE STUDIO"); font.pixelSize: 9; font.bold: true; color: win.mutedForeground; opacity: 0.78 }
+                    Layout.preferredWidth: 145
+                    Label { text: qsTr("WindowTuner"); font.pixelSize: 14; font.bold: true }
                 }
-                Item { Layout.fillWidth: true }
+                TextField {
+                    id: headerSearch
+                    objectName: "headerSearch"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 34
+                    selectByMouse: true
+                    leftPadding: 12
+                    rightPadding: 68
+                    background: Rectangle { radius: 6; color: "#0b141b"; border.color: headerSearch.activeFocus ? theme.accent : win.outline }
+                    onTextEdited: {
+                        if (win.settingsSearch) { win.settingsFilter = text; settingsResultsPopup.open() }
+                        else if (!win.windowsPage && win.category === 4) win.ruleFilter = text
+                        else { win.windowFilter = text; win.windowsPage = true }
+                    }
+                    Label {
+                        anchors.left: parent.left; anchors.leftMargin: 12
+                        anchors.right: parent.right; anchors.rightMargin: 68
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: headerSearch.text.length === 0
+                        text: win.settingsSearch ? qsTr("Search settings…") : !win.windowsPage && win.category === 4 ? qsTr("Search saved rules…") : qsTr("Search windows by app, title, or workspace…")
+                        color: win.mutedForeground; font.pixelSize: 12; elide: Text.ElideRight
+                    }
+                    Label { anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; text: "Ctrl K"; color: win.mutedForeground; font.pixelSize: 10 }
+                    Accessible.name: qsTr("Search windows or saved rules")
+                    Popup {
+                        id: settingsResultsPopup
+                        objectName: "settingsResultsPopup"
+                        y: headerSearch.height + 6
+                        width: headerSearch.width
+                        padding: 8
+                        contentItem: ColumnLayout {
+                            Repeater {
+                                model: win.settingResults
+                                delegate: ItemDelegate { required property var modelData; text: modelData.title; Layout.fillWidth: true; onClicked: win.jumpToSetting(modelData) }
+                            }
+                            Label { visible: win.settingResults.length === 0; text: qsTr("No matching settings") }
+                        }
+                    }
+                }
+                ToolButton { objectName: "settingsSearchToggle"; text: "⚙"; checkable: true; checked: win.settingsSearch; Accessible.name: qsTr("Search settings"); ToolTip.visible: hovered; ToolTip.text: qsTr("Toggle settings search"); onClicked: { win.settingsSearch = !win.settingsSearch; headerSearch.text = ""; headerSearch.forceActiveFocus() } }
                 Label {
                     text: qsTr("%1 WINDOWS").arg(backend.windows.length)
                     color: win.mutedForeground
@@ -327,26 +676,210 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.margins: 18
-            spacing: 16
+            spacing: 0
 
-            // Window selection is intentionally always visible while editing.
             Rectangle {
-                Layout.preferredWidth: 300
+                Layout.preferredWidth: win.width < 1000 ? 178 : 210
                 Layout.fillHeight: true
-                radius: 14
-                color: win.surface
-                border.color: win.outline
+                color: "#080e12"
+                Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: win.outline }
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    spacing: 5
+                    Button {
+                        objectName: "windowsNavigation"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 42
+                        text: qsTr("▦   Windows")
+                        flat: true
+                        highlighted: win.windowsPage
+                        onClicked: win.navigate(-1)
+                        background: Rectangle { radius: 6; color: win.windowsPage ? Qt.alpha(theme.accent, 0.13) : parent.hovered ? win.raisedSurface : "transparent"; border.color: win.windowsPage ? Qt.alpha(theme.accent, 0.25) : "transparent" }
+                        contentItem: Label { text: parent.text; color: win.windowsPage ? theme.accent : "#c2cdd6"; verticalAlignment: Text.AlignVCenter; leftPadding: 10 }
+                    }
+                    Rectangle { Layout.fillWidth: true; Layout.topMargin: 6; Layout.bottomMargin: 6; height: 1; color: win.outline }
+                    Label { text: qsTr("WINDOW SETTINGS"); font.pixelSize: 9; font.letterSpacing: 1; color: win.mutedForeground; leftPadding: 10; Layout.bottomMargin: 5 }
+                    Repeater {
+                        model: win.sections
+                        delegate: Button {
+                            id: navButton
+                            required property var modelData
+                            required property int index
+                            objectName: "sectionNavigation" + index
+                            readonly property bool selected: !win.windowsPage && win.category === index
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 40
+                            flat: true
+                            onClicked: win.navigate(index)
+                            background: Rectangle {
+                                radius: 6
+                                color: navButton.selected ? Qt.alpha(theme.accent, 0.13) : navButton.hovered ? win.raisedSurface : "transparent"
+                                border.color: navButton.selected ? Qt.alpha(theme.accent, 0.25) : "transparent"
+                            }
+                            contentItem: RowLayout {
+                                spacing: 10
+                                Label { text: modelData.icon; color: navButton.selected ? theme.accent : win.mutedForeground; Layout.preferredWidth: 22; horizontalAlignment: Text.AlignHCenter }
+                                Label { text: modelData.title; color: navButton.selected ? theme.accent : "#c2cdd6"; Layout.fillWidth: true; elide: Text.ElideRight }
+                            }
+                            Accessible.name: modelData.title
+                        }
+                    }
+                    Item { Layout.fillHeight: true }
+                    Button {
+                        id: toolsNavigation
+                        objectName: "toolsNavigation"
+                        text: qsTr("Tools and workflows")
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 44
+                        hoverEnabled: true
+                        flat: true
+                        onClicked: toolsMenu.open()
+                        background: Rectangle {
+                            radius: 9
+                            color: toolsMenu.opened ? Qt.alpha(theme.accent, 0.13)
+                                : toolsNavigation.hovered ? win.raisedSurface : "transparent"
+                            border.color: toolsMenu.opened ? Qt.alpha(theme.accent, 0.38) : "transparent"
+                        }
+                        contentItem: RowLayout {
+                            spacing: 10
+                            Label {
+                                text: "✦"
+                                color: toolsMenu.opened ? theme.accent : win.mutedForeground
+                                font.pixelSize: 17
+                                Layout.preferredWidth: 22
+                                horizontalAlignment: Text.AlignHCenter
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: toolsNavigation.text
+                                color: toolsMenu.opened ? theme.accent : "#c2cdd6"
+                            }
+                            Label { text: toolsMenu.opened ? "⌃" : "›"; color: win.mutedForeground; font.pixelSize: 16 }
+                        }
+                        Popup {
+                            id: toolsMenu
+                            objectName: "toolsMenu"
+                            parent: Overlay.overlay
+                            x: {
+                                const p = toolsNavigation.mapToItem(Overlay.overlay, 0, 0)
+                                return Math.max(12, Math.min(win.width - width - 12, p.x))
+                            }
+                            y: {
+                                const p = toolsNavigation.mapToItem(Overlay.overlay, 0, 0)
+                                return Math.max(12, Math.min(win.height - height - 12, p.y - height - 10))
+                            }
+                            width: Math.min(500, win.width - 24)
+                            height: Math.min(implicitHeight, win.height - 24)
+                            padding: 14
+                            modal: false
+                            focus: true
+                            closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                            background: Rectangle {
+                                radius: 14
+                                color: "#0f171d"
+                                border.color: "#344652"
+                            }
+                            contentItem: ColumnLayout {
+                                id: toolsLauncherContent
+                                width: toolsMenu.availableWidth
+                                spacing: 10
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 2
+                                        Label { text: qsTr("Tools and workflows"); font.pixelSize: 17; font.bold: true }
+                                        Label { text: qsTr("Shortcuts for managing your window setup"); color: win.mutedForeground; font.pixelSize: 10 }
+                                    }
+                                    ToolButton {
+                                        text: "×"
+                                        Accessible.name: qsTr("Close tools and workflows")
+                                        onClicked: toolsMenu.close()
+                                    }
+                                }
+                                Rectangle { Layout.fillWidth: true; height: 1; color: win.outline }
+                                Label {
+                                    text: qsTr("WINDOW RULES")
+                                    color: win.mutedForeground
+                                    font.pixelSize: 9
+                                    font.bold: true
+                                    font.letterSpacing: 1
+                                    Layout.topMargin: 1
+                                }
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: 2
+                                    rowSpacing: 7
+                                    columnSpacing: 7
+                                    ToolLauncherTile { actionId: "safety"; glyph: "◈"; title: qsTr("Safety and history"); detail: qsTr("Undo, snapshots, and trial changes") }
+                                    ToolLauncherTile { actionId: "placement"; glyph: "⌖"; title: qsTr("Placement designer"); detail: qsTr("Arrange a window visually") }
+                                    ToolLauncherTile { actionId: "inspect"; glyph: "⌕"; title: qsTr("Inspect match"); detail: qsTr("See which rules match a window") }
+                                    ToolLauncherTile { actionId: "workflows"; glyph: "▤"; title: qsTr("Presets and profiles"); detail: qsTr("Save and switch rule collections") }
+                                }
+                                Label {
+                                    text: qsTr("APPLICATIONS")
+                                    color: win.mutedForeground
+                                    font.pixelSize: 9
+                                    font.bold: true
+                                    font.letterSpacing: 1
+                                    Layout.topMargin: 1
+                                }
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: 2
+                                    rowSpacing: 7
+                                    columnSpacing: 7
+                                    ToolLauncherTile { actionId: "management"; glyph: "◫"; title: qsTr("Applications and imports"); detail: qsTr("Create targets and organize rules") }
+                                    ToolLauncherTile { objectName: "appSpaceMenuEntry"; actionId: "appspace"; glyph: "▦"; title: qsTr("Apps, workspaces, displays"); detail: qsTr("Choose where apps open") }
+                                }
+                                Label {
+                                    text: qsTr("HELP AND DIAGNOSTICS")
+                                    color: win.mutedForeground
+                                    font.pixelSize: 9
+                                    font.bold: true
+                                    font.letterSpacing: 1
+                                    Layout.topMargin: 1
+                                }
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: 2
+                                    rowSpacing: 7
+                                    columnSpacing: 7
+                                    ToolLauncherTile { actionId: "health"; glyph: "◇"; title: qsTr("Compatibility and health"); detail: qsTr("Check supported Hyprland features") }
+                                    ToolLauncherTile { actionId: "welcome"; glyph: "✦"; title: qsTr("Getting started"); detail: qsTr("Open the guided walkthrough") }
+                                    ToolLauncherTile { actionId: "shortcuts"; glyph: "⌘"; title: qsTr("Keyboard shortcuts"); detail: qsTr("View available key commands") }
+                                }
+                            }
+                        }
+                    }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: win.outline }
+                    Label { text: qsTr("Hyprland window rules"); color: win.mutedForeground; font.pixelSize: 10; leftPadding: 10; Layout.topMargin: 8 }
+                    Label { text: qsTr("Alt 1–5  ·  Switch section"); color: win.mutedForeground; font.pixelSize: 9; leftPadding: 10 }
+                }
+            }
+
+            // A dedicated discovery page keeps the settings pane uncluttered.
+            Rectangle {
+                objectName: "windowsPage"
+                visible: win.windowsPage
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.margins: 20
+                color: "transparent"
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 14
                     spacing: 12
 
                     RowLayout {
                         Layout.fillWidth: true
-                        Label { text: qsTr("WINDOWS"); font.pixelSize: 11; font.bold: true; font.letterSpacing: 1.1 }
+                        ColumnLayout {
+                            Label { text: qsTr("Windows"); font.pixelSize: 25; font.bold: true }
+                            Label { text: qsTr("Choose a window to configure its rules."); color: win.mutedForeground; font.pixelSize: 12 }
+                        }
                         Item { Layout.fillWidth: true }
+                        CheckBox { text: qsTr("Group apps"); checked: win.groupApplications; onToggled: win.groupApplications = checked }
                         ToolButton {
                             text: "⌖"
                             font.pixelSize: 19
@@ -361,34 +894,32 @@ ApplicationWindow {
                             font.bold: true
                         }
                     }
-                    TextField {
-                        id: windowSearch
-                        Layout.fillWidth: true
-                        placeholderText: qsTr("Search title or app…")
-                        selectByMouse: true
-                    }
 
                     ListView {
                         id: windowList
+                        objectName: "windowList"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
                         spacing: 5
                         model: win.visibleWindows
+                        section.property: win.groupApplications ? "appGroup" : ""
+                        section.delegate: Label { required property string section; text: section; color: theme.accent; padding: 8; font.bold: true }
                         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                         delegate: ItemDelegate {
                             id: windowItem
                             required property var modelData
+                            objectName: "windowEntry" + modelData.sourceIndex
                             width: ListView.view.width
-                            height: 66
+                            height: 70
                             highlighted: modelData.sourceIndex === backend.selectedIndex
-                            onClicked: backend.selectWindow(modelData.sourceIndex)
+                            onClicked: win.chooseWindow(modelData.sourceIndex)
                             background: Rectangle {
                                 radius: 9
-                                    color: windowItem.highlighted ? Qt.alpha(theme.accent, 0.11) : (windowItem.hovered ? win.raisedSurface : "transparent")
-                                    border.width: windowItem.highlighted ? 1 : 0
-                                    border.color: Qt.alpha(theme.accent, 0.48)
+                                color: windowItem.highlighted ? Qt.alpha(theme.accent, 0.11) : (windowItem.hovered ? win.raisedSurface : win.surface)
+                                border.width: 1
+                                border.color: windowItem.highlighted ? Qt.alpha(theme.accent, 0.48) : win.outline
                             }
                             contentItem: RowLayout {
                                 spacing: 11
@@ -409,14 +940,14 @@ ApplicationWindow {
                                     spacing: 3
                                     Label {
                                         Layout.fillWidth: true
-                                text: modelData.currentTitle || modelData.title || qsTr("Untitled window")
+                                        text: modelData.currentTitle || modelData.title || qsTr("Untitled window")
                                         elide: Text.ElideRight
                                         font.pixelSize: 13
                                         font.bold: windowItem.highlighted
                                     }
                                     Label {
                                         Layout.fillWidth: true
-                                text: modelData["class"] + "  ·  WS " + modelData.workspace + "  ·  " + (modelData.monitorName || qsTr("monitor %1").arg(modelData.monitor))
+                                        text: modelData["class"] + "  ·  WS " + modelData.workspace + "  ·  " + (modelData.monitorName || qsTr("monitor %1").arg(modelData.monitor))
                                         elide: Text.ElideRight
                                         opacity: 0.58
                                         font.pixelSize: 10
@@ -492,67 +1023,60 @@ ApplicationWindow {
             }
 
             ColumnLayout {
+                objectName: "editorPage"
+                visible: !win.windowsPage
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Layout.margins: 20
                 spacing: 12
 
                 RowLayout {
                     Layout.fillWidth: true
                     ColumnLayout {
                         spacing: 2
-                        Label { text: qsTr("WINDOWTUNER  /  %1 OF 5").arg(win.category + 1); font.pixelSize: 9; font.bold: true; color: theme.accent; font.letterSpacing: 0.9 }
                         Label { text: win.sections[win.category].title; font.pixelSize: 23; font.bold: true }
                         Label { text: win.sections[win.category].subtitle; color: win.mutedForeground; font.pixelSize: 11 }
                     }
                     Item { Layout.fillWidth: true }
+                    ComboBox { objectName: "editorMode"; model: [qsTr("Basic"), qsTr("Advanced")]; currentIndex: win.advancedMode ? 1 : 0; onActivated: win.advancedMode = currentIndex === 1 }
                     Button {
-                        text: (win.previewExpanded ? "⌄  " + qsTr("Hide preview") : "◉  " + qsTr("Preview rule"))
+                        text: qsTr("Change window")
                         flat: true
-                        highlighted: win.previewExpanded
-                        onClicked: win.previewExpanded = !win.previewExpanded
+                        onClicked: win.navigate(-1)
                     }
                 }
 
-                // Segmented section navigation, following Hyprforge's compact
-                // studio navigation while keeping WindowTuner's own workflows.
-                RowLayout {
+                Rectangle {
                     Layout.fillWidth: true
-                    spacing: 5
-                    Repeater {
-                        model: win.sections
-                        delegate: Button {
-                            id: sectionButton
-                            required property var modelData
-                            required property int index
+                    Layout.preferredHeight: 74
+                    radius: 8
+                    color: win.surface
+                    border.color: win.outline
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 12
+                        Rectangle {
+                            Layout.preferredWidth: 36; Layout.preferredHeight: 36; radius: 8
+                            color: Qt.alpha(theme.accent, 0.13)
+                            Label { anchors.centerIn: parent; text: "▣"; color: theme.accent; font.pixelSize: 20 }
+                        }
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 40
-                            checkable: true
-                            checked: win.category === index
-                            flat: true
-                            onClicked: win.category = index
-                            background: Rectangle {
-                                radius: 9
-                                color: sectionButton.checked ? Qt.alpha(theme.accent, 0.13) : sectionButton.hovered ? win.raisedSurface : "transparent"
-                                border.width: sectionButton.checked ? 1 : 0
-                                border.color: Qt.alpha(theme.accent, 0.38)
-                                Behavior on color { ColorAnimation { duration: 100 } }
+                            spacing: 3
+                            Label {
+                                text: win.editingRuleIndex >= 0 ? qsTr("EDITING SAVED RULE") : qsTr("SELECTED WINDOW")
+                                color: theme.accent; font.pixelSize: 9; font.bold: true
                             }
-                            contentItem: RowLayout {
-                                spacing: 7
-                                Text {
-                                    text: modelData.icon
-                                    color: sectionButton.checked ? theme.accent : win.mutedForeground
-                                    font.pixelSize: 14
-                                }
-                                Label {
-                                    Layout.fillWidth: true
-                                    text: modelData.title
-                                    horizontalAlignment: Text.AlignHCenter
-                                    color: sectionButton.checked ? theme.accent : "#c2cbc5"
-                                    font.pixelSize: 10
-                                    font.bold: sectionButton.checked
-                                    elide: Text.ElideRight
-                                }
+                            Label {
+                                Layout.fillWidth: true
+                                text: win.editingRuleId ? (win.editingRule.name || qsTr("Edited rule was removed")) : backend.selectedWindow["class"] ? (backend.selectedWindow.currentTitle || backend.selectedWindow.title || backend.selectedWindow["class"]) : qsTr("Choose a window to get started")
+                                elide: Text.ElideRight
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: backend.selectedIndex >= 0 ? backend.selectedWindow["class"] + "  ·  " + qsTr("Workspace %1").arg(backend.selectedWindow.workspace) : qsTr("Use Windows in the sidebar to choose a target.")
+                                color: win.mutedForeground; font.pixelSize: 10; elide: Text.ElideRight
                             }
                         }
                     }
@@ -587,7 +1111,10 @@ ApplicationWindow {
                                         anchors.margins: 16; spacing: 14
                                         ColumnLayout {
                                             spacing: 3
-                                            Label { text: qsTr("Window layout"); font.pixelSize: 15; font.bold: true }
+                                            ModuleHeading {
+                                                title: qsTr("Window layout"); helpKey: "layout"
+                                                explanation: qsTr("Choose how matching windows are arranged. Floating allows a custom size and position; Tiled lets the workspace layout manage them. Keep current leaves the layout mode unchanged. Quick presets fill in common sizes and positions.")
+                                            }
                                             Label { text: qsTr("Control how this window joins your workspace."); font.pixelSize: 11; opacity: 0.58 }
                                         }
                                         RowLayout {
@@ -596,6 +1123,7 @@ ApplicationWindow {
                                             Repeater {
                                                 model: [qsTr("Floating"), qsTr("Keep current"), qsTr("Tiled")]
                                                 delegate: Button {
+                                                    id: layoutChoice
                                                     required property string modelData
                                                     required property int index
                                                     Layout.fillWidth: true
@@ -603,6 +1131,7 @@ ApplicationWindow {
                                                     checkable: true
                                                     checked: ["floating", "keep", "tiled"][index] === win.layoutMode
                                                     onClicked: { win.layoutMode = ["floating", "keep", "tiled"][index]; win.refreshPreview() }
+                                                    background: Rectangle { radius: 6; color: layoutChoice.checked ? Qt.alpha(theme.accent, 0.13) : win.raisedSurface; border.color: layoutChoice.checked ? Qt.alpha(theme.accent, 0.45) : win.outline }
                                                 }
                                             }
                                         }
@@ -627,7 +1156,10 @@ ApplicationWindow {
                                         anchors.margins: 16; spacing: 12
                                         ColumnLayout {
                                             spacing: 3
-                                            Label { text: qsTr("Size & position"); font.pixelSize: 15; font.bold: true }
+                                            ModuleHeading {
+                                                title: qsTr("Size & position"); helpKey: "size"
+                                                explanation: qsTr("Set the floating window's width and height in logical pixels. Center places it in the middle of its monitor. Set position uses X and Y offsets from that monitor's top-left corner instead. Size and position are intended for floating windows.")
+                                            }
                                             Label { text: qsTr("Set dimensions in logical pixels. Position is relative to the monitor."); font.pixelSize: 11; opacity: 0.58; wrapMode: Text.WordWrap }
                                         }
                                         RowLayout {
@@ -644,6 +1176,7 @@ ApplicationWindow {
                                                 SpinBox { id: heightField; Layout.fillWidth: true; from: 100; to: 10000; value: 420; editable: true; onValueChanged: win.refreshPreview() }
                                             }
                                         }
+                                        Label { Layout.fillWidth: true; visible: !!win.fieldErrors.width || !!win.fieldErrors.height; text: (win.fieldErrors.width || "") + "\n" + (win.fieldErrors.height || ""); color: "#ffb778"; wrapMode: Text.WordWrap }
                                         RowLayout {
                                             Layout.fillWidth: true
                                             CheckBox { id: centerBox; text: qsTr("Center on monitor"); checked: true; onToggled: { if (checked) positionBox.checked = false; win.refreshPreview() } }
@@ -670,12 +1203,17 @@ ApplicationWindow {
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: constraintsContent.implicitHeight + 30
+                                    visible: win.advancedMode
                                     radius: 13; color: win.surface; border.color: win.outline
                                     ColumnLayout {
                                         id: constraintsContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                                         anchors.margins: 16; spacing: 8
-                                        Label { text: qsTr("Size constraints"); font.pixelSize: 15; font.bold: true }
+                                        ModuleHeading {
+                                            title: qsTr("Size constraints"); helpKey: "constraints"
+                                            explanation: qsTr("Optionally limit how small or large matching windows can become. Enable Minimum or Maximum and enter width × height in logical pixels. Leave a limit unchecked to omit it from the rule. Applications may also enforce their own size limits.")
+                                        }
+                                        Label { Layout.fillWidth: true; visible: !!win.fieldErrors.constraints; text: win.fieldErrors.constraints || ""; color: "#ffb778"; wrapMode: Text.WordWrap }
                                         RowLayout {
                                             Layout.fillWidth: true
                                             CheckBox { id: minSizeBox; text: qsTr("Minimum"); onToggled: win.refreshPreview() }
@@ -710,7 +1248,10 @@ ApplicationWindow {
                                         id: placementCard
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                                         anchors.margins: 16; spacing: 14
-                                        Label { text: qsTr("Workspace & visibility"); font.pixelSize: 15; font.bold: true }
+                                        ModuleHeading {
+                                            title: qsTr("Workspace & visibility"); helpKey: "workspace"
+                                            explanation: qsTr("Choose the workspace where matching windows should open. Leave Workspace empty to keep the current workspace behavior. Add silent, for example 3 silent, to avoid switching to that workspace. Pin keeps a floating window visible as you change workspaces.")
+                                        }
                                         ColumnLayout {
                                             Layout.fillWidth: true
                                             spacing: 5
@@ -736,39 +1277,56 @@ ApplicationWindow {
                                         id: scopeCard
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                                         anchors.margins: 16; spacing: 9
-                                        Label { text: qsTr("Rule matching"); font.pixelSize: 15; font.bold: true }
-                        CheckBox { id: titleMatch; text: qsTr("Match this window's initial title too"); checked: true; onToggled: win.refreshPreview() }
+                                        ModuleHeading {
+                                            title: qsTr("Rule matching"); helpKey: "matching"
+                                            explanation: qsTr("Decide which windows receive this rule. Class identifies the application; matching the initial title narrows it to a particular kind of window. Exact, Contains, and Regular expression control how text is compared. Extra conditions narrow the match further. Windows with identical class and title can share the rule.")
+                                        }
+                        CheckBox { id: titleMatch; text: qsTr("Match this window's title too"); checked: true; onToggled: win.refreshPreview() }
+                        ComboBox {
+                            objectName: "scopeChoice"
+                            Layout.fillWidth: true
+                            model: [qsTr("This application"), qsTr("Application and title"), qsTr("Advanced conditions")]
+                            currentIndex: win.advancedMode ? 2 : titleMatch.checked ? 1 : 0
+                            onActivated: { if (currentIndex < 2) titleMatch.checked = currentIndex === 1; else win.advancedMode = true; win.refreshPreview() }
+                        }
+                        TextField { id: classPatternField; Layout.fillWidth: true; placeholderText: qsTr("Class pattern (empty uses selected application)"); Accessible.name: qsTr("Class pattern"); onTextChanged: win.refreshPreview() }
+                        TextField { id: titlePatternField; Layout.fillWidth: true; enabled: titleMatch.checked; placeholderText: qsTr("Title pattern (empty uses selected title)"); Accessible.name: qsTr("Title pattern"); onTextChanged: win.refreshPreview() }
+                        Label { Layout.fillWidth: true; color: "#ffb778"; visible: !!win.fieldErrors["class"] || !!win.fieldErrors.title; wrapMode: Text.WordWrap; text: (win.fieldErrors["class"] || "") + "\n" + (win.fieldErrors.title || "") }
                         RowLayout {
                             Layout.fillWidth: true
                             enabled: titleMatch.checked
+                            visible: win.advancedMode
                             Label { text: qsTr("Title match"); Layout.preferredWidth: 105; font.pixelSize: 11; opacity: 0.7 }
                             ComboBox { id: titleMatchMode; model: [qsTr("Exact"), qsTr("Contains"), qsTr("Regular expression")]; Layout.fillWidth: true; onCurrentIndexChanged: win.refreshPreview() }
                         }
                         RowLayout {
                             Layout.fillWidth: true
+                            visible: win.advancedMode
                             Label { text: qsTr("Class match"); Layout.preferredWidth: 105; font.pixelSize: 11; opacity: 0.7 }
                             ComboBox { id: classMatchMode; model: [qsTr("Exact"), qsTr("Contains"), qsTr("Regular expression")]; Layout.fillWidth: true; onCurrentIndexChanged: win.refreshPreview() }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true
+                            visible: win.advancedMode
                             enabled: !titleMatch.checked
-                            Label { text: qsTr("Exclude initial titles (regular expression)"); font.pixelSize: 11; opacity: 0.7 }
+                            Label { text: qsTr("Exclude titles (full-match regular expression)"); font.pixelSize: 11; opacity: 0.7 }
                             TextField {
                                 id: excludeTitleField
                                 Layout.fillWidth: true
                                 placeholderText: qsTr("e.g. ^Settings$")
                                 onTextChanged: win.refreshPreview()
                             }
+                            Label { Layout.fillWidth: true; visible: !!win.fieldErrors.excludeTitle; text: win.fieldErrors.excludeTitle || ""; color: "#ffb778"; wrapMode: Text.WordWrap }
                             Label { text: qsTr("Hyprland's negative: selector excludes matching titles."); font.pixelSize: 10; opacity: 0.5 }
                         }
                         Rectangle { Layout.fillWidth: true; height: 1; color: win.outline }
-                        Label { text: qsTr("Additional match conditions"); font.pixelSize: 12; font.bold: true }
-                        CheckBox { id: workspaceMatch; text: qsTr("Only on the selected window's workspace"); onToggled: win.refreshPreview() }
-                        CheckBox { id: xdgTagMatch; text: qsTr("Match the XDG tag"); enabled: backend.selectedWindow.xdgTag !== ""; onToggled: win.refreshPreview() }
-                        CheckBox { id: xwaylandMatch; text: qsTr("Match XWayland windows"); onToggled: win.refreshPreview() }
-                        CheckBox { id: fullscreenMatch; text: qsTr("Match fullscreen state"); onToggled: win.refreshPreview() }
-                        CheckBox { id: groupMatch; text: qsTr("Match grouped state"); onToggled: win.refreshPreview() }
-                        CheckBox { id: contentMatch; text: qsTr("Match content type"); enabled: backend.selectedWindow.contentType !== ""; onToggled: win.refreshPreview() }
+                        Label { visible: win.advancedMode; text: qsTr("Additional match conditions"); font.pixelSize: 12; font.bold: true }
+                        CheckBox { id: workspaceMatch; visible: win.advancedMode; text: qsTr("Only on the selected window's workspace"); onToggled: win.refreshPreview() }
+                        CheckBox { id: xdgTagMatch; visible: win.advancedMode; text: qsTr("Match the XDG tag"); enabled: backend.selectedWindow.xdgTag !== ""; onToggled: win.refreshPreview() }
+                        CheckBox { id: xwaylandMatch; visible: win.advancedMode; text: qsTr("Match XWayland state (on or off)"); onToggled: win.refreshPreview() }
+                        CheckBox { id: fullscreenMatch; visible: win.advancedMode; text: qsTr("Match fullscreen state"); onToggled: win.refreshPreview() }
+                        CheckBox { id: groupMatch; visible: win.advancedMode; text: qsTr("Match grouped state"); onToggled: win.refreshPreview() }
+                        CheckBox { id: contentMatch; visible: win.advancedMode; text: qsTr("Match content type"); enabled: backend.selectedWindow.contentType !== ""; onToggled: win.refreshPreview() }
                                         Label {
                                             Layout.fillWidth: true
                                             text: qsTr("Recommended. The rule matches this app class and title, so other windows from the same app are left alone. Identical class/title windows share the rule.")
@@ -800,7 +1358,10 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                             ColumnLayout {
                                                 spacing: 3
-                                                Label { text: qsTr("Opacity"); font.pixelSize: 15; font.bold: true }
+                                                ModuleHeading {
+                                                    title: qsTr("Opacity"); helpKey: "opacity"
+                                                    explanation: qsTr("Enable to override transparency for matching windows. Focused applies to the active window; Unfocused applies when another window is active. 1.00 is fully opaque and lower values are more transparent. Disable to leave opacity out of this rule.")
+                                                }
                                                 Label { text: qsTr("Adjust transparency for focused and unfocused states."); font.pixelSize: 11; opacity: 0.58 }
                                             }
                                             Item { Layout.fillWidth: true }
@@ -830,7 +1391,10 @@ ApplicationWindow {
                                         id: chromeContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                                         anchors.margins: 16; spacing: 10
-                                        Label { text: qsTr("Window decoration"); font.pixelSize: 15; font.bold: true }
+                                        ModuleHeading {
+                                            title: qsTr("Window decoration"); helpKey: "decoration"
+                                            explanation: qsTr("Override the compositor's border thickness and corner rounding for matching windows. Values are in pixels; zero removes that decoration. Each override must be enabled separately. Unchecked options keep the normal theme or other applicable rules.")
+                                        }
                                         RowLayout {
                                             Layout.fillWidth: true
                                             CheckBox { id: borderBox; text: qsTr("Set border width"); onToggled: win.refreshPreview() }
@@ -855,7 +1419,10 @@ ApplicationWindow {
                                         id: effectsContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                                         anchors.margins: 16; spacing: 8
-                                        Label { text: qsTr("Visual effects"); font.pixelSize: 15; font.bold: true }
+                                        ModuleHeading {
+                                            title: qsTr("Visual effects"); helpKey: "effects"
+                                            explanation: qsTr("Disable background blur or the outside window shadow for matching windows. These checkboxes turn effects off, not on. Leaving them unchecked omits the override and lets your normal Hyprland configuration decide.")
+                                        }
                                         CheckBox { id: blurBox; text: qsTr("Disable background blur"); onToggled: win.refreshPreview() }
                                         CheckBox { id: shadowBox; text: qsTr("Disable window shadow"); onToggled: win.refreshPreview() }
                                     }
@@ -878,7 +1445,10 @@ ApplicationWindow {
                                         id: focusContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                                         anchors.margins: 16; spacing: 8
-                                        Label { text: qsTr("Focus & interaction"); font.pixelSize: 15; font.bold: true }
+                                        ModuleHeading {
+                                            title: qsTr("Focus & interaction"); helpKey: "focus"
+                                            explanation: qsTr("Prevent matching windows from taking keyboard focus automatically when they open. This is useful for passive panels and notifications. You can still focus the window yourself later; the option does not disable keyboard or mouse input.")
+                                        }
                                         CheckBox { id: focusBox; text: qsTr("Don't focus this window when it opens"); onToggled: win.refreshPreview() }
                                         Label { text: qsTr("Useful for notification windows and passive panels."); font.pixelSize: 11; opacity: 0.58; wrapMode: Text.WordWrap }
                                     }
@@ -891,7 +1461,10 @@ ApplicationWindow {
                                         id: performanceContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                                         anchors.margins: 16; spacing: 8
-                                        Label { text: qsTr("Performance & persistence"); font.pixelSize: 15; font.bold: true }
+                                        ModuleHeading {
+                                            title: qsTr("Performance & persistence"); helpKey: "performance"
+                                            explanation: qsTr("Set per-window exceptions for animations, inactive-window dimming, and variable refresh rate (VRR). Remember floating size asks Hyprland to preserve the floating size for matching windows. These settings apply to this rule's targets, not the whole desktop.")
+                                        }
                                         CheckBox { id: animationBox; text: qsTr("Disable window animations"); onToggled: win.refreshPreview() }
                                         CheckBox { id: dimBox; text: qsTr("Disable dimming"); onToggled: win.refreshPreview() }
                                         CheckBox { id: vrrBox; text: qsTr("Disable variable refresh rate for this window"); onToggled: win.refreshPreview() }
@@ -916,16 +1489,18 @@ ApplicationWindow {
                                         id: savedIntro
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                                         anchors.margins: 16; spacing: 5
-                                        Label { text: qsTr("Saved rules"); font.pixelSize: 15; font.bold: true }
+                                        ModuleHeading {
+                                            title: qsTr("Saved rules"); helpKey: "saved"
+                                            explanation: qsTr("Manage rules stored in your Hyprland configuration. Enable or disable, apply to matching open windows, duplicate, edit, reorder, or remove a rule using its row actions. Overlap warns that rules may target the same windows. Import and export transfer the complete collection as JSON; review imports before confirming.")
+                                        }
                                          Label {
                                              Layout.fillWidth: true
                                              text: qsTr("Manage persistent Hyprland window rules. Import and export the complete rule collection as JSON.")
                                              wrapMode: Text.WordWrap; font.pixelSize: 11; opacity: 0.6
                                          }
-                                         TextField { id: savedRuleSearch; Layout.fillWidth: true; placeholderText: qsTr("Filter saved rules"); onTextChanged: win.visibleRules }
                                          RowLayout {
                                              Layout.fillWidth: true
-                                             Button { text: qsTr("Import"); onClicked: { rulesDataDialog.importing = true; rulesDataDialog.open() } }
+                                             Button { text: qsTr("Import / organize"); onClicked: managementDialog.open() }
                                              Button { text: qsTr("Export"); onClicked: { rulesDataDialog.importing = false; rulesDataDialog.open() } }
                                          }
                                     }
@@ -1026,9 +1601,11 @@ ApplicationWindow {
                 }
 
                 Rectangle {
+                    objectName: "rulePreviewPanel"
                     Layout.fillWidth: true
-                    Layout.preferredHeight: previewExpanded ? 140 : 54
-                    radius: 12
+                    visible: win.previewExpanded
+                    Layout.preferredHeight: 148
+                    radius: 8
                     color: win.surface
                     border.color: win.outline
                     Behavior on Layout.preferredHeight { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
@@ -1067,9 +1644,10 @@ ApplicationWindow {
                 }
 
                 Rectangle {
+                    objectName: "ruleActionBar"
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 66
-                    radius: 12
+                    Layout.preferredHeight: 68
+                    radius: 8
                     color: win.surface
                     border.color: win.outline
                     RowLayout {
@@ -1083,7 +1661,7 @@ ApplicationWindow {
                         }
                         Label {
                             Layout.fillWidth: true
-                            text: backend.status
+                            text: win.dirty ? qsTr("Unsaved draft · %1").arg(backend.status) : backend.status
                             wrapMode: Text.WordWrap
                             maximumLineCount: 2
                             elide: Text.ElideRight
@@ -1091,20 +1669,28 @@ ApplicationWindow {
                             opacity: 0.78
                         }
                         Button {
-                            text: win.editingRuleIndex >= 0 ? qsTr("Update rule") : qsTr("Apply rule")
+                            objectName: "previewAction"
+                            text: qsTr("Preview")
+                            flat: true
+                            checked: win.previewExpanded
+                            checkable: true
+                            onClicked: win.previewExpanded = !win.previewExpanded
+                        }
+                        Button {
+                            id: saveAction
+                            objectName: "saveRuleAction"
+                            text: win.editingRuleIndex >= 0 ? qsTr("Update rule") : qsTr("Apply & save")
                             highlighted: true
                             visible: win.category < 4
-                            enabled: win.editingRuleIndex >= 0 || (backend.selectedIndex >= 0 && backend.windows.length > 0)
-                            onClicked: {
-                                if (win.editingRuleIndex >= 0) {
-                                    if (backend.updateRule(win.editingRuleIndex, win.options())) win.editingRuleIndex = -1
-                                } else backend.saveRule(win.options())
-                            }
+                            enabled: win.editTargetAvailable && (win.editingRuleIndex >= 0 || !!backend.selectedWindow["class"]) && Object.keys(win.fieldErrors).length === 0
+                            background: Rectangle { radius: 6; color: saveAction.enabled ? (saveAction.hovered ? Qt.lighter(theme.accent, 1.12) : theme.accent) : win.raisedSurface }
+                            contentItem: Label { text: saveAction.text; color: saveAction.enabled ? "#081116" : win.mutedForeground; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            onClicked: win.requestSave()
                         }
                         Button {
                             text: qsTr("Cancel edit")
                             visible: win.editingRuleIndex >= 0
-                            onClicked: { win.editingRuleIndex = -1; win.refreshPreview() }
+                            onClicked: { win.editingRuleIndex = -1; win.editingRuleId = ""; win.refreshPreview() }
                         }
                     }
                 }
@@ -1112,5 +1698,10 @@ ApplicationWindow {
         }
     }
 
-    Component.onCompleted: refreshPreview()
+    Component.onCompleted: {
+        classPatternField.text = backend.selectedWindow.currentClass || backend.selectedWindow["class"] || ""
+        titlePatternField.text = backend.selectedWindow.currentTitle || backend.selectedWindow.title || ""
+        refreshPreview(); markClean(); editorReady = true
+        if (!backend.preference("onboarded", false)) Qt.callLater(function() { welcomeDialog.open() })
+    }
 }

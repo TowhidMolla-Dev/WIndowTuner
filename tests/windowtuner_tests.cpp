@@ -1,13 +1,898 @@
 #include <QFile>
 #include <QTemporaryDir>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
+#include <QQuickItem>
+#include <QQuickStyle>
+#include <QQuickWindow>
+#include <QStandardPaths>
+#include <QJsonDocument>
+#include <QProcess>
+#include <QScopeGuard>
 #include <QtTest>
+#include <functional>
 
 #include "backend.h"
+#include "theme.h"
+
+struct DesktopFixture {
+    QTemporaryDir dir;
+    bool write(const QString &name, const QByteArray &data, bool executable = false)
+    {
+        QDir().mkpath(QFileInfo(dir.filePath(name)).absolutePath());
+        QFile file(dir.filePath(name));
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) || file.write(data) != data.size()) return false;
+        file.close();
+        return !executable || file.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+    }
+    bool initialize()
+    {
+        return dir.isValid() && write("hyprland.lua", "-- fixture config\n") &&
+            write("clients.json", R"([{"address":"0x1","class":"foot","initialClass":"foot","title":"Work","initialTitle":"Work","workspace":{"name":"1"},"at":[10,20],"size":[800,600],"floating":true}])") &&
+            write("hyprctl", "#!/bin/sh\nif [ \"$2\" = clients ]; then cat '" + dir.filePath("clients.json").toUtf8() +
+                "'; elif [ \"$2\" = monitors ]; then echo '[{\"name\":\"DP-1\",\"width\":1920,\"height\":1080,\"scale\":1,\"reserved\":[0,40,0,0]}]'; "
+                "elif [ \"$2\" = version ]; then echo '{\"tag\":\"fixture-lua\"}'; elif [ \"$1\" = configerrors ]; then echo '[]'; fi\nexit 0\n", true);
+    }
+};
+
+static QQuickItem *visualItem(QQuickItem *parent, const QString &name)
+{
+    if (parent->objectName() == name) return parent;
+    for (auto *child : parent->childItems())
+        if (auto *found = visualItem(child, name)) return found;
+    return nullptr;
+}
 
 class WindowTunerTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void monitorDisconnectReconnectRuntime()
+    {
+        const auto lua = QStandardPaths::findExecutable("lua");
+        QVERIFY2(!lua.isEmpty(), "Install Lua to run the production monitor-runtime regression tests.");
+        QProcess process;
+        process.start(lua, {QFINDTESTDATA("monitor_recovery.lua"), QFINDTESTDATA("../src/monitor_recovery.lua")});
+        QVERIFY(process.waitForFinished(10000));
+        const auto output = process.readAllStandardOutput() + process.readAllStandardError();
+        QVERIFY2(process.exitCode() == 0, output.constData());
+        QVERIFY(output.contains("15 regression scenarios passed"));
+    }
+    void generatedMonitorRuntimeIsReviewedAndValidated()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        const QVariantMap placement{{"enabled", true}, {"runtimeRecovery", true}, {"monitor", "DP-1"},
+            {"fallback", "eDP-1"}, {"unit", "percent"}, {"width", 50}, {"height", 50}};
+        const auto settings = backend.resolvePlacement({{"matchTitle", false}, {"placement", placement}});
+        const auto review = backend.reviewChanges(settings);
+        QVERIFY(review.value("moduleAfter").toString().contains("install_windowtuner_recovery"));
+        const auto verdict = backend.verifyDraft(settings);
+        QVERIFY2(verdict.value("ok").toBool(), verdict.value("details").toString().toUtf8().constData());
+        QVERIFY(backend.saveRule(settings));
+        QFile module(fixture.dir.filePath("windowtuner.lua")); QVERIFY(module.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromUtf8(module.readAll()), review.value("moduleAfter").toString());
+        module.close();
+        QVERIFY(backend.setRuleEnabled(0, false));
+        QVERIFY(module.open(QIODevice::ReadOnly));
+        const auto disabled = module.readAll();
+        QVERIFY(!disabled.contains("install_windowtuner_recovery"));
+        QVERIFY(disabled.contains("__windowtuner_placement_runtime.stop()"));
+    }
+    void appSpaceRuntimeScenarios()
+    {
+        const auto lua = QStandardPaths::findExecutable("lua");
+        QVERIFY2(!lua.isEmpty(), "Install Lua to run the production AppSpace runtime tests.");
+        QProcess process;
+        process.start(lua, {QFINDTESTDATA("appspace.lua"), QFINDTESTDATA("../src/appspace_runtime.lua")});
+        QVERIFY(process.waitForFinished(15000));
+        const auto output = process.readAllStandardOutput() + process.readAllStandardError();
+        QVERIFY2(process.exitCode() == 0, output.constData());
+        QVERIFY(output.contains("18 regression scenarios passed"));
+    }
+    void derivesApplicationClassesFromDesktopEntries()
+    {
+        // A declared class is what Hyprland will compare against.
+        QCOMPARE(Backend::deriveApplicationClass("org.example.Editor", "org.example.Editor", "/usr/bin/editor %U", "chromium"),
+                 QString("org.example.Editor"));
+        QCOMPARE(Backend::deriveApplicationClass("steam", "custom-class", "steam -applaunch 1", "chromium"),
+                 QString("custom-class"));
+        QCOMPARE(Backend::deriveApplicationClass("steam-1234", "", "steam://rungameid/1234", "chromium"),
+                 QString("steam_app_1234"));
+        QCOMPARE(Backend::deriveApplicationClass("weird", "", "omarchy-launch-tui htop", "chromium"),
+                 QString("org.omarchy.htop"));
+        QCOMPARE(Backend::deriveApplicationClass("weird", "", "foot --app-id=org.example.Term", "chromium"),
+                 QString("org.example.Term"));
+        QCOMPARE(Backend::deriveApplicationClass("chromium-webapp-abc", "",
+                 "omarchy-launch-webapp https://chat.example.com/", "chromium"),
+                 QString("chromium-chat.example.com__-Default"));
+        // A broken declaration must not become a match: fall back to the id.
+        QCOMPARE(Backend::deriveApplicationClass("org.example.Tool", "has space", "/usr/bin/tool %f", "chromium"),
+                 QString("org.example.Tool"));
+        QCOMPARE(Backend::desktopExecCommand("/usr/bin/player --play %U --title=%f"),
+                 QString("/usr/bin/player --play --title="));
+        QCOMPARE(Backend::desktopLaunchTarget("org.example.Editor", "/usr/bin/editor"),
+                 QString("org.example.Editor.desktop"));
+        QCOMPARE(Backend::desktopLaunchTarget("", "/usr/bin/editor %U"), QString("/usr/bin/editor"));
+    }
+    void importsAppSpacePlacementDisplaysAndAliases()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        const QString source = fixture.dir.filePath("appspace.json");
+        QVERIFY(fixture.write("appspace.json", R"({
+            "version": 6,
+            "rules": [
+              {"class":"tmail","workspace":"2","silent":true,"label":"TMail","verified":true,
+               "autostart":true,"command":"tmail.desktop","startupOnly":true,"startupWindow":45},
+              {"class":"steam_app_1","workspace":"","silent":false,"label":"Game","verified":false,
+               "autostart":false,"command":"/usr/bin/game","startupOnly":false,"startupWindow":20}
+            ],
+            "workspaces": {"2": {"monitor": "WAM WD215I09", "persistent": true}},
+            "monitors": {"WAM WD215I09": {"mode": "1920x1080@75.00", "x": 0, "y": 0, "scale": 1, "transform": 0}},
+            "aliases": {"steam_app_1": "com.example.Game"}
+        })"));
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+
+        QVERIFY(backend.appSpacePath().endsWith("/omarchy/appspace/rules.json"));
+        const auto preview = backend.appSpaceImportPreview(source);
+        QVERIFY2(preview.value("ok").toBool(), qPrintable(preview.value("error").toString()));
+        QCOMPARE(preview.value("added").toInt(), 2);
+        QCOMPARE(preview.value("updated").toInt(), 0);
+        QCOMPARE(preview.value("workspaces").toInt(), 1);
+        QCOMPARE(preview.value("monitors").toInt(), 1);
+        QVERIFY(preview.value("sample").toList().size() == 2);
+        // Preview must not write anything.
+        QVERIFY(!QFile::exists(fixture.dir.filePath("windowtuner.json")));
+
+        QVERIFY2(backend.importAppSpace(source), qPrintable(backend.status()));
+        QCOMPARE(backend.savedRules().size(), 2);
+        const auto settingsFor = [&](const QString &klass) {
+            for (const auto &entry : backend.savedRules())
+                if (entry.toMap().value("class").toString() == klass)
+                    return entry.toMap().value("settings").toMap();
+            return QVariantMap{};
+        };
+        const auto tmail = settingsFor("tmail");
+        QCOMPARE(tmail.value("workspace").toString(), QString("2"));
+        QVERIFY(tmail.value("noInitialFocus").toBool());
+        QVERIFY(tmail.value("autostart").toBool());
+        QCOMPARE(tmail.value("launchDesktop").toString(), QString("tmail.desktop"));
+        QCOMPARE(tmail.value("launchCommand").toString(), QString("gtk-launch tmail.desktop"));
+        QVERIFY(tmail.value("startupOnly").toBool());
+        QCOMPARE(tmail.value("startupWindow").toInt(), 45);
+        // The alias replaces the class Steam reported at first launch.
+        const auto game = settingsFor("com.example.Game");
+        QVERIFY(!game.isEmpty());
+        QCOMPARE(game.value("launchDesktop").toString(), QString());
+        QCOMPARE(game.value("launchCommand").toString(), QString("/usr/bin/game"));
+        QCOMPARE(game.value("workspace").toString(), QString());
+
+        const auto plan = backend.workspacePlan();
+        QCOMPARE(plan.at(1).toMap().value("monitor").toString(), QString("WAM WD215I09"));
+        QVERIFY(plan.at(1).toMap().value("persistent").toBool());
+        QVERIFY(plan.at(1).toMap().value("apps").toStringList().contains("tmail"));
+
+        QFile module(fixture.dir.filePath("windowtuner.lua")); QVERIFY(module.open(QIODevice::ReadOnly));
+        const auto lua = QString::fromUtf8(module.readAll());
+        module.close();
+        QVERIFY(lua.contains("install_windowtuner_appspace"));
+        QVERIFY(lua.contains("__windowtuner_ws"));
+        QVERIFY(lua.contains("WAM WD215I09"));
+        QVERIFY(lua.contains("uwsm-app -- tmail.desktop"));
+        QVERIFY(lua.contains("\"startup\""));
+        QFile library(fixture.dir.filePath("windowtuner-library.json")); QVERIFY(library.open(QIODevice::ReadOnly));
+        const auto libraryJson = QJsonDocument::fromJson(library.readAll()).object();
+        QCOMPARE(libraryJson.value("workspaces").toObject().value("2").toObject().value("monitor").toString(),
+                 QString("WAM WD215I09"));
+        QCOMPARE(libraryJson.value("monitors").toObject().value("WAM WD215I09").toObject().value("mode").toString(),
+                 QString("1920x1080@75.00"));
+
+        // Importing again updates instead of duplicating.
+        QVERIFY(backend.importAppSpace(source));
+        QCOMPARE(backend.savedRules().size(), 2);
+        QCOMPARE(backend.appSpaceImportPreview(source).value("updated").toInt(), 2);
+
+        // The generated module must be accepted by the installed Hyprland Lua
+        // parser with the runtime, workspace pins and startup data inside it.
+        const auto program = QStandardPaths::findExecutable("Hyprland");
+        if (!program.isEmpty()) {
+            QTemporaryDir isolate;
+            QVERIFY(isolate.isValid());
+            QFile regenerated(fixture.dir.filePath("windowtuner.lua"));
+            QVERIFY(regenerated.open(QIODevice::ReadOnly));
+            QVERIFY(fixture.write("validation.lua", regenerated.readAll()));
+            auto env = QProcessEnvironment::systemEnvironment();
+            env.insert("XDG_CONFIG_HOME", isolate.path());
+            env.insert("XDG_STATE_HOME", isolate.path());
+            env.insert("XDG_CACHE_HOME", isolate.path());
+            env.remove("HYPRLAND_INSTANCE_SIGNATURE");
+            QProcess process;
+            process.setProcessEnvironment(env);
+            process.start(program, {"--verify-config", "-c", fixture.dir.filePath("validation.lua")});
+            QVERIFY(process.waitForStarted(2000) && process.waitForFinished(15000));
+            const auto output = QString::fromUtf8(process.readAllStandardOutput() + process.readAllStandardError());
+            QVERIFY2(process.exitCode() == 0 && process.exitStatus() == QProcess::NormalExit,
+                     output.toUtf8().constData());
+        }
+    }
+    void workspacePinsResolveGeneratedSlots()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QVERIFY(backend.setWorkspacePlan("3", "WAM WD215I09", true));
+        QCOMPARE(backend.workspacePlan().size(), 10);
+        QCOMPARE(backend.workspacePlan().at(2).toMap().value("monitor").toString(), QString("WAM WD215I09"));
+        QVERIFY(backend.setApplicationPlacement("demo", {{"name", "Demo"}, {"workspace", "3"}}));
+        QVERIFY2(backend.setApplicationPlacement("plain", {{"name", "Plain"}, {"workspace", "5"}}),
+                 qPrintable(backend.status()));
+        QVERIFY(backend.workspacePlan().at(2).toMap().value("apps").toStringList().contains("demo"));
+        // The catalogue merges rules with running/installed apps.
+        bool found = false;
+        for (const auto &entry : backend.applicationCatalog()) {
+            const auto row = entry.toMap();
+            if (row.value("class").toString() != "demo") continue;
+            found = true;
+            QVERIFY(row.value("pinned").toBool());
+            QCOMPARE(row.value("workspace").toString(), QString("3"));
+        }
+        QVERIFY(found);
+
+        QFile module(fixture.dir.filePath("windowtuner.lua")); QVERIFY(module.open(QIODevice::ReadOnly));
+        const auto lua = QString::fromUtf8(module.readAll());
+        module.close();
+        QVERIFY2(lua.contains("__windowtuner_ws(\"3\", \"desc:WAM WD215I09\")"), lua.toUtf8().constData());
+        QVERIFY(lua.contains("workspace = \"5\""));
+        // A pinned slot must never silently become another workspace.
+        QVERIFY(!backend.setApplicationPlacement("demo", {{"workspace", "11"}}));
+        QVERIFY(backend.status().contains("1 to 10"));
+        // Removing a placement-only rule leaves no stale module block.
+        QVERIFY(backend.clearApplicationPlacement("demo"));
+        QVERIFY(module.open(QIODevice::ReadOnly));
+        const auto cleaned = QString::fromUtf8(module.readAll());
+        module.close();
+        QVERIFY(!cleaned.contains("__windowtuner_ws(\"3\""));
+        QVERIFY(backend.workspacePlan().at(2).toMap().value("apps").toStringList().isEmpty());
+        QVERIFY(backend.removeWorkspacePlan("3"));
+        QCOMPARE(backend.workspacePlan().at(2).toMap().value("monitor").toString(), QString());
+    }
+    void monitorLayoutKeepsOrReverts()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        QVERIFY(fixture.write("hyprctl", "#!/bin/sh\n"
+            "if [ \"$2\" = clients ]; then echo '[]'; "
+            "elif [ \"$2\" = monitors ]; then echo '[{\"id\":0,\"name\":\"DP-1\",\"description\":\"WAM WD215I09\","
+            "\"width\":1920,\"height\":1080,\"x\":0,\"y\":0,\"scale\":1,\"transform\":0,\"refreshRate\":75.0,"
+            "\"availableModes\":[\"1920x1080@75.00Hz\",\"1280x720@60.00Hz\"],\"reserved\":[0,0,0,0]}]'; "
+            "elif [ \"$2\" = version ]; then echo '{\"tag\":\"fixture-lua\"}'; "
+            "elif [ \"$1\" = configerrors ]; then echo '[]'; fi\nexit 0\n", true));
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QCOMPARE(backend.monitors().size(), 1);
+        const auto plan = backend.monitorPlan();
+        QCOMPARE(plan.size(), 1);
+        QCOMPARE(plan.first().toMap().value("description").toString(), QString("WAM WD215I09"));
+        QVERIFY(!plan.first().toMap().value("saved").toBool());
+        QVERIFY(plan.first().toMap().value("modes").toStringList().contains("1280x720@60.00"));
+
+        QVERIFY2(backend.applyMonitorLayout("WAM WD215I09",
+            {{"mode", "1280x720@60.00"}, {"x", 1920}, {"y", 0}, {"scale", 1.25}, {"transform", 1}, {"enabled", true}}),
+            qPrintable(backend.status()));
+        QVERIFY(backend.monitorRevertPending());
+        auto saved = backend.monitorPlan().first().toMap();
+        QVERIFY(saved.value("saved").toBool());
+        QCOMPARE(saved.value("mode").toString(), QString("1280x720@60.00"));
+        QCOMPARE(saved.value("x").toInt(), 1920);
+        QCOMPARE(saved.value("scale").toDouble(), 1.25);
+        QCOMPARE(saved.value("transform").toInt(), 1);
+        QFile module(fixture.dir.filePath("windowtuner.lua")); QVERIFY(module.open(QIODevice::ReadOnly));
+        const auto lua = QString::fromUtf8(module.readAll());
+        module.close();
+        QVERIFY2(lua.contains("install_windowtuner_appspace"), lua.toUtf8().constData());
+        QVERIFY(lua.contains("WAM WD215I09"));
+        QVERIFY(lua.contains("1280x720@60.00"));
+
+        // A second change while waiting must still revert to the layout from
+        // before the first change, not to the intermediate one.
+        QVERIFY(backend.applyMonitorLayout("WAM WD215I09", {{"x", 640}}));
+        QVERIFY(backend.monitorRevertPending());
+        QVERIFY(backend.revertMonitorLayout());
+        QVERIFY(!backend.monitorRevertPending());
+        QVERIFY(!backend.monitorPlan().first().toMap().value("saved").toBool());
+        QVERIFY(backend.revertMonitorLayout()); // idempotent when nothing is pending
+
+        QVERIFY(backend.applyMonitorLayout("WAM WD215I09", {{"mode", "1920x1080@75.00"}, {"scale", 1.0}}));
+        QVERIFY(backend.keepMonitorLayout());
+        QVERIFY(!backend.monitorRevertPending());
+        saved = backend.monitorPlan().first().toMap();
+        QVERIFY(saved.value("saved").toBool());
+        QCOMPARE(saved.value("scale").toDouble(), 1.0);
+        // Keeping must leave the file alone: a later change reverts to this one.
+        QVERIFY(backend.applyMonitorLayout("WAM WD215I09", {{"scale", 2.0}}));
+        QVERIFY(backend.revertMonitorLayout());
+        QCOMPARE(backend.monitorPlan().first().toMap().value("scale").toDouble(), 1.0);
+    }
+    void startupOnlyRulesMoveOnlyLoginWindows()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QVERIFY(backend.setWorkspacePlan("2", "WAM WD215I09", false));
+        QVERIFY2(backend.setApplicationPlacement("late",
+            {{"name", "Late"}, {"workspace", "2"}, {"startupOnly", true}, {"startupWindow", 30}}),
+            qPrintable(backend.status()));
+        QFile module(fixture.dir.filePath("windowtuner.lua")); QVERIFY(module.open(QIODevice::ReadOnly));
+        const auto lua = QString::fromUtf8(module.readAll());
+        module.close();
+        QVERIFY(lua.contains("hl.window_rule({"));
+        // A pinned workspace would catch every later window, so the rule must
+        // not carry one; the runtime handler does the placement instead.
+        QVERIFY2(!lua.contains("workspace = __windowtuner_ws"), lua.toUtf8().constData());
+        QVERIFY(lua.contains("install_windowtuner_appspace"));
+        QVERIFY(lua.contains("within"));
+        QVERIFY(lua.contains("late"));
+        // Enabling autostart without a command or desktop entry is refused.
+        QVERIFY(!backend.setApplicationPlacement("late", {{"workspace", ""}, {"autostart", true}}));
+    }
+    void initTestCase()
+    {
+        qputenv("QT_QUICK_CONTROLS_MATERIAL_VARIANT", "Dense");
+        QQuickStyle::setStyle("Material");
+    }
+    void onboardingSettingsSearchAndDirtyGuard()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        Theme theme;
+        QQmlApplicationEngine engine;
+        QSignalSpy warnings(&engine, &QQmlEngine::warnings);
+        engine.rootContext()->setContextProperty("backend", &backend);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *welcome = window->findChild<QObject *>("welcomeDialog");
+        QVERIFY(welcome);
+        QTRY_VERIFY(welcome->property("opened").toBool());
+        for (int i = 0; i < 4; ++i) {
+            auto *next = visualItem(window->contentItem(), "welcomeNext"); QVERIFY(next);
+            QVERIFY(QMetaObject::invokeMethod(next, "clicked"));
+        }
+        QTRY_VERIFY(!welcome->property("opened").toBool());
+        QVERIFY(backend.preference("onboarded", false).toBool());
+        QVERIFY(!window->property("advancedMode").toBool());
+        auto *searchToggle = visualItem(window->contentItem(), "settingsSearchToggle"); QVERIFY(searchToggle);
+        QVERIFY(QMetaObject::invokeMethod(searchToggle, "clicked"));
+        QVERIFY(window->property("settingsSearch").toBool());
+        auto *header = visualItem(window->contentItem(), "headerSearch"); QVERIFY(header);
+        header->forceActiveFocus();
+        for (char key : QByteArray("opacity")) QTest::keyClick(window, key);
+        QTRY_COMPARE(window->property("settingResults").value<QJSValue>().toVariant().toList().size(), 1);
+        const QVariant destination = QVariantMap{{"key", "opacity"}, {"page", 2}};
+        QVERIFY(QMetaObject::invokeMethod(window, "jumpToSetting", Q_ARG(QVariant, destination)));
+        QCOMPARE(window->property("category").toInt(), 2);
+        QVariantMap preset{{"layout", "floating"}, {"width", 720}, {"height", 480}, {"borderEnabled", true}, {"borderSize", 0}};
+        QVERIFY(QMetaObject::invokeMethod(window, "restorePreset", Q_ARG(QVariant, preset)));
+        QTRY_VERIFY(window->property("dirty").toBool());
+        QVariant returned;
+        QVERIFY(QMetaObject::invokeMethod(window, "options", Q_RETURN_ARG(QVariant, returned)));
+        QCOMPARE(returned.value<QJSValue>().toVariant().toMap().value("borderSize").toInt(), 0);
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseWindow", Q_ARG(QVariant, 0)));
+        auto *discard = window->findChild<QObject *>("discardDialog"); QVERIFY(discard);
+        QTRY_VERIFY(discard->property("opened").toBool());
+        QVERIFY(QMetaObject::invokeMethod(discard, "reject"));
+        QVERIFY(window->property("dirty").toBool());
+        window->setProperty("textScale", 1.2);
+        QTest::qWait(100);
+        window->grabWindow();
+        QCOMPARE(window->minimumWidth(), 1032);
+        auto *bar = visualItem(window->contentItem(), "ruleActionBar"); QVERIFY(bar);
+        QVERIFY(bar->mapToScene(QPointF(bar->width(), bar->height())).y() <= window->height() + 1);
+        QCOMPARE(warnings.size(), 0);
+    }
+    void toolsDialogsRenderAtSupportedSizes()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        const auto oldHome = qgetenv("XDG_DATA_HOME"), oldDirs = qgetenv("XDG_DATA_DIRS");
+        const auto restoreEnv = qScopeGuard([&] {
+            if (oldHome.isNull()) qunsetenv("XDG_DATA_HOME"); else qputenv("XDG_DATA_HOME", oldHome);
+            if (oldDirs.isNull()) qunsetenv("XDG_DATA_DIRS"); else qputenv("XDG_DATA_DIRS", oldDirs);
+        });
+        qputenv("XDG_DATA_HOME", fixture.dir.filePath("data").toUtf8());
+        qputenv("XDG_DATA_DIRS", fixture.dir.filePath("data").toUtf8());
+        QVERIFY(fixture.write("data/applications/demo.desktop", "[Desktop Entry]\nType=Application\nName=Demo Editor\nStartupWMClass=org.example.Editor\n"));
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QVERIFY(backend.setPreference("onboarded", true));
+        const QVariantMap settings{{"layout", "floating"}, {"width", 600}, {"height", 420}, {"matchTitle", false}};
+        QVERIFY(backend.saveRule(settings));
+        QVERIFY(backend.createBackup("Demo snapshot"));
+        QVERIFY(backend.savePreset("Demo preset", settings));
+        QVERIFY(backend.saveProfile("Demo profile"));
+        Theme theme;
+        QQmlApplicationEngine engine;
+        QSignalSpy warnings(&engine, &QQmlEngine::warnings);
+        engine.rootContext()->setContextProperty("backend", &backend);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        const auto screenshots = qEnvironmentVariable("WINDOWTUNER_TEST_SCREENSHOTS");
+        const QStringList names{"safetyDialog", "placementDesigner", "inspectorDialog", "workflowDialog", "managementDialog", "appSpaceDialog", "healthDialog"};
+        for (const auto &size : QList<QSize>{{860, 680}, {1120, 820}, {1440, 900}}) {
+            window->resize(size);
+            QTest::qWait(100);
+            for (const auto &name : names) {
+                auto *popup = window->findChild<QObject *>(name); QVERIFY2(popup, qPrintable(name));
+                QVERIFY(QMetaObject::invokeMethod(popup, "open"));
+                QTRY_VERIFY(popup->property("opened").toBool());
+                window->grabWindow();
+                QVERIFY(popup->property("width").toDouble() <= window->width());
+                QVERIFY(popup->property("height").toDouble() <= window->height());
+                auto *scroll = popup->findChild<QQuickItem *>("toolScroll"); QVERIFY(scroll);
+                QVERIFY(scroll->property("contentWidth").toDouble() <= scroll->property("availableWidth").toDouble() + 1);
+                const auto rendered = window->grabWindow();
+                const auto backdrop = rendered.pixelColor(qRound(popup->property("x").toDouble() + 4),
+                                                           qRound(popup->property("y").toDouble() + 100));
+                QVERIFY2(backdrop.red() < 70, "Dialog body must be opaque and dark.");
+                if (name == "placementDesigner") {
+                    popup->setProperty("placement", QVariantMap{{"enabled", true}, {"monitor", "DP-1"}, {"unit", "percent"}, {"width", 50}, {"height", 50}, {"anchor", "bottom-right"}, {"margin", 24}});
+                    QTest::qWait(50);
+                    const auto raw = popup->property("geometry");
+                    const auto geometry = raw.metaType().id() == qMetaTypeId<QJSValue>() ? raw.value<QJSValue>().toVariant().toMap() : raw.toMap();
+                    QCOMPARE(geometry.value("width").toInt(), 960);
+                    if (size == QSize(1120, 820)) {
+                        window->grabWindow();
+                        auto *preview = visualItem(window->contentItem(), "placementWindow"); QVERIFY(preview);
+                        const auto start = preview->mapToScene(QPointF(preview->width() / 2, preview->height() / 2)).toPoint();
+                        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
+                        QTest::mouseMove(window, start - QPoint(20, 20), 50);
+                        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, start - QPoint(20, 20));
+                        auto p = popup->property("placement");
+                        auto placement = p.metaType().id() == qMetaTypeId<QJSValue>() ? p.value<QJSValue>().toVariant().toMap() : p.toMap();
+                        QCOMPARE(placement.value("anchor").toString(), QString("custom"));
+                        QVERIFY(placement.value("x").toInt() < geometry.value("x").toInt());
+                        window->grabWindow();
+                        auto *handle = visualItem(window->contentItem(), "placementResizeHandle"); QVERIFY(handle);
+                        const auto corner = handle->mapToScene(QPointF(8, 8)).toPoint();
+                        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, corner);
+                        QTest::mouseMove(window, corner - QPoint(20, 10), 50);
+                        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, corner - QPoint(20, 10));
+                        p = popup->property("placement");
+                        placement = p.metaType().id() == qMetaTypeId<QJSValue>() ? p.value<QJSValue>().toVariant().toMap() : p.toMap();
+                        QCOMPARE(placement.value("unit").toString(), QString("pixels"));
+                        QVERIFY(placement.value("width").toInt() < 960);
+                    }
+                }
+                if (name == "appSpaceDialog") {
+                    // Every tab must lay out without warnings or clipped content.
+                    auto *tabs = visualItem(window->contentItem(), "appSpaceTabs");
+                    QVERIFY(tabs);
+                    const QStringList tabItems{"appSpaceSearch", "appSpaceWorkspaceList",
+                                               "appSpaceMonitorList", "appSpaceImportPreview"};
+                    for (int tab = 0; tab < tabItems.size(); ++tab) {
+                        tabs->setProperty("currentIndex", tab);
+                        QTest::qWait(80);
+                        auto *page = visualItem(window->contentItem(), tabItems[tab]);
+                        QVERIFY2(page, qPrintable(tabItems[tab]));
+                        QVERIFY(page->isVisible());
+                        window->grabWindow();
+                        if (!screenshots.isEmpty())
+                            QVERIFY(window->grabWindow().save(screenshots + "/appSpaceDialog-"
+                                + QString::number(tab) + QString("-%1x%2.png").arg(size.width()).arg(size.height())));
+                    }
+                    tabs->setProperty("currentIndex", 0);
+                }
+                if (!screenshots.isEmpty()) {
+                    QDir().mkpath(screenshots);
+                    QVERIFY(window->grabWindow().save(screenshots + "/" + name + QString("-%1x%2.png").arg(size.width()).arg(size.height())));
+                }
+                QVERIFY(QMetaObject::invokeMethod(popup, "close"));
+                QTRY_VERIFY(!popup->property("opened").toBool());
+            }
+            auto *launcher = window->findChild<QObject *>("toolsMenu"); QVERIFY(launcher);
+            QVERIFY(QMetaObject::invokeMethod(launcher, "open"));
+            QTRY_VERIFY(launcher->property("opened").toBool());
+            QVERIFY(launcher->property("width").toDouble() <= window->width());
+            QVERIFY(launcher->property("height").toDouble() <= window->height());
+            auto *appSpaceTile = visualItem(window->contentItem(), "appSpaceMenuEntry");
+            QVERIFY(appSpaceTile && appSpaceTile->isVisible());
+            if (!screenshots.isEmpty() && size == QSize(1120, 820))
+                QVERIFY(window->grabWindow().save(screenshots + "/toolsLauncher-1120x820.png"));
+            QVERIFY(QMetaObject::invokeMethod(launcher, "close"));
+            QTRY_VERIFY(!launcher->property("opened").toBool());
+        }
+        QCOMPARE(backend.installedApplications().size(), 1);
+        QCOMPARE(backend.installedApplications().first().toMap().value("class").toString(), QString("org.example.Editor"));
+        QCOMPARE(warnings.size(), 0);
+    }
+    void historySurvivesRestart()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        {
+            Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+            QVERIFY(backend.saveRule({{"layout", "tiled"}, {"matchTitle", false}}));
+            QVERIFY(backend.createBackup("Before deletion"));
+            QVERIFY(backend.deleteRule(0));
+            QVERIFY(backend.canUndo());
+        }
+        Backend reopened(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QCOMPARE(reopened.savedRules().size(), 0);
+        QCOMPARE(reopened.backups().size(), 1);
+        QVERIFY(reopened.undo());
+        QCOMPARE(reopened.savedRules().size(), 1);
+        QVERIFY(reopened.redo());
+        QCOMPARE(reopened.savedRules().size(), 0);
+    }
+    void reviewExactlyPredictsWrittenLua()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QVariantMap settings{{"layout", "floating"}, {"matchTitle", false}, {"width", 640}, {"height", 480},
+            {"match", QVariantMap{{"class", "foot"}}}};
+        auto review = backend.reviewChanges(settings);
+        QVERIFY(!QFile::exists(fixture.dir.filePath("windowtuner.json")));
+        QVERIFY(backend.saveRule(settings));
+        QFile module(fixture.dir.filePath("windowtuner.lua")); QVERIFY(module.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromUtf8(module.readAll()), review.value("moduleAfter").toString());
+        QFile config(fixture.dir.filePath("hyprland.lua")); QVERIFY(config.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromUtf8(config.readAll()), review.value("configAfter").toString());
+        module.close();
+        settings["width"] = 800;
+        review = backend.reviewChanges(settings, 0);
+        QVERIFY(backend.updateRule(0, settings));
+        QVERIFY(module.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromUtf8(module.readAll()), review.value("moduleAfter").toString());
+        module.close();
+        settings["width"] = 900;
+        review = backend.reviewChanges(settings);
+        QVERIFY(backend.saveRule(settings));
+        QVERIFY(module.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromUtf8(module.readAll()), review.value("moduleAfter").toString());
+        QCOMPARE(backend.savedRules().size(), 1);
+    }
+    void failedValidationPreservesFilesAndHistory()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QVERIFY(backend.saveRule({{"layout", "tiled"}, {"matchTitle", false}}));
+        const auto before = backend.exportRules();
+        const auto historySize = backend.history().size();
+        // An error that was already there is the baseline and must not block an
+        // unrelated change; an error introduced *by* the change still rolls it
+        // back. The fake compositor reports a problem only for disabled rules.
+        const QString data = fixture.dir.filePath("windowtuner.json");
+        QVERIFY(fixture.write("hyprctl", "#!/bin/sh\nif [ \"$1\" = configerrors ]; then "
+            "if [ -f '" + data.toUtf8() + "' ] && grep -q '\"enabled\": false' '" + data.toUtf8() + "'; "
+            "then echo 'fixture failure'; else echo '[]'; fi; fi\nexit 0\n", true));
+        QVERIFY(!backend.setRuleEnabled(0, false));
+        QCOMPARE(backend.exportRules(), before);
+        QCOMPARE(backend.history().size(), historySize);
+        QVERIFY(backend.savedRules().first().toMap().value("enabled").toBool());
+        QVERIFY(fixture.write("hyprctl", "#!/bin/sh\nif [ \"$1\" = configerrors ]; then exit 1; fi\nexit 0\n", true));
+        QVERIFY(!backend.deleteRule(0));
+        QCOMPARE(backend.exportRules(), before);
+    }
+    void corruptRecoveryDataIsNeverApplied()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        const auto malformed = QJsonDocument(QJsonObject{{"past", QJsonArray{QJsonObject{
+            {"entryPoint", fixture.dir.filePath("hyprland.lua")}}}}}).toJson();
+        QVERIFY(fixture.write("windowtuner-history.json", malformed));
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QVERIFY(!backend.undo());
+        QFile config(fixture.dir.filePath("hyprland.lua")); QVERIFY(config.open(QIODevice::ReadOnly));
+        QCOMPARE(config.readAll(), QByteArray("-- fixture config\n"));
+        QVERIFY(fixture.write("windowtuner-history.json", "not-json"));
+        QVERIFY(!backend.saveRule({{"layout", "tiled"}, {"matchTitle", false}}));
+        QVERIFY(!QFile::exists(fixture.dir.filePath("windowtuner.json")));
+    }
+    void failedTrialRetainsRecoveryRecord()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QVERIFY(fixture.write("hyprctl", "#!/bin/sh\nif [ \"$2\" = clients ]; then cat '" +
+            fixture.dir.filePath("clients.json").toUtf8() + "'; elif [ \"$1\" = eval ]; then echo 'error: denied'; fi\nexit 0\n", true));
+        QVERIFY(!backend.tryGeometry({{"layout", "floating"}, {"width", 500}, {"height", 400}}));
+        QVERIFY(backend.trialActive());
+        QVERIFY(fixture.write("hyprctl", "#!/bin/sh\nexit 0\n", true));
+        QVERIFY(backend.revertTrial());
+        QVERIFY(!backend.trialActive());
+        QVERIFY(!QFile::exists(fixture.dir.filePath("windowtuner.json")));
+    }
+    void invalidSettingsAreRejected_data()
+    {
+        QTest::addColumn<QVariantMap>("settings");
+        QTest::newRow("negative width") << QVariantMap{{"width", -1}};
+        QTest::newRow("nonnumeric height") << QVariantMap{{"height", "bad"}};
+        QTest::newRow("invalid layout") << QVariantMap{{"layout", "magic"}};
+        QTest::newRow("invalid opacity") << QVariantMap{{"opacityActive", 2}};
+        QTest::newRow("invalid regex") << QVariantMap{{"classMatchMode", "regex"}, {"match", QVariantMap{{"class", "["}}}};
+        QTest::newRow("invalid exclusion") << QVariantMap{{"excludeTitle", "["}};
+        QTest::newRow("inverted limits") << QVariantMap{{"minSizeEnabled", true}, {"maxSizeEnabled", true}, {"minWidth", 1500}, {"maxWidth", 1000}};
+        QTest::newRow("negative border") << QVariantMap{{"borderEnabled", true}, {"borderSize", -1}};
+        QTest::newRow("unsupported setting") << QVariantMap{{"unknownEffect", true}};
+        QTest::newRow("unsupported predicate") << QVariantMap{{"match", QVariantMap{{"class", "foot"}, {"pid", 42}}}};
+        QTest::newRow("unsupported match mode") << QVariantMap{{"classMatchMode", "magic"}};
+    }
+    void invalidSettingsAreRejected()
+    {
+        QFETCH(QVariantMap, settings);
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QVERIFY(!backend.validateSettings(settings).isEmpty());
+        QVERIFY(!backend.saveRule(settings));
+        QVERIFY(!QFile::exists(fixture.dir.filePath("windowtuner.json")));
+    }
+    void auditsInstalledFeatureCapabilities()
+    {
+        if (QStandardPaths::findExecutable("Hyprland").isEmpty()) QSKIP("Hyprland is not installed.");
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        const auto capabilities = backend.auditCapabilities();
+        QCOMPARE(capabilities.size(), 10);
+        for (const auto &entry : capabilities) {
+            const auto row = entry.toMap();
+            QVERIFY2(row.value("status").toString() == "verified-config-only",
+                     qPrintable(row.value("name").toString() + ": " + row.value("details").toString()));
+        }
+    }
+    void verifiesDraftWithInstalledHyprland()
+    {
+        if (QStandardPaths::findExecutable("Hyprland").isEmpty()) QSKIP("Hyprland is not installed.");
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        const QVariantMap settings{{"layout", "floating"}, {"matchTitle", false}, {"width", 640}, {"height", 480},
+            {"setPosition", true}, {"center", false}, {"x", 24}, {"y", 40}, {"monitor", "DP-1"},
+            {"pin", true}, {"noBlur", true}, {"noShadow", true}, {"noInitialFocus", true}, {"noAnim", true},
+            {"noDim", true}, {"noVrr", true}, {"persistentSize", true}, {"roundingEnabled", true}, {"rounding", 8},
+            {"minSizeEnabled", true}, {"minWidth", 320}, {"minHeight", 200},
+            {"maxSizeEnabled", true}, {"maxWidth", 1200}, {"maxHeight", 900},
+            {"opacityEnabled", true}, {"opacityActive", 0.9}, {"opacityInactive", 0.8},
+            {"borderEnabled", true}, {"borderSize", 2}, {"workspace", "3 silent"}};
+        const auto result = backend.verifyDraft(settings);
+        QVERIFY2(result.value("ok").toBool(), qPrintable(result.value("details").toString()));
+        QFile config(fixture.dir.filePath("hyprland.lua")); QVERIFY(config.open(QIODevice::ReadOnly));
+        QCOMPARE(config.readAll(), QByteArray("-- fixture config\n"));
+        QVERIFY(!QFile::exists(fixture.dir.filePath("windowtuner.json")));
+    }
+    void healthAndDiagnosticsDoNotLeakPrivateData()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QCOMPARE(backend.healthReport().value("version").toString(), QString("fixture-lua"));
+        QVERIFY(!backend.healthReport().value("apiVerified").toBool());
+        const QString diagnostic = backend.diagnosticReport();
+        QVERIFY(!diagnostic.contains(fixture.dir.path()));
+        QVERIFY(!diagnostic.contains("Work"));
+        QVERIFY(!diagnostic.contains("foot"));
+        QVERIFY(fixture.write("alternate.lua", "-- alternate\n"));
+        QVERIFY(backend.configureEntryPoint(fixture.dir.filePath("alternate.lua")));
+        QCOMPARE(backend.configEntryPoint(), fixture.dir.filePath("alternate.lua"));
+        QVERIFY(!backend.configureEntryPoint("relative.lua"));
+    }
+    void managesOfflineRulesMetadataAndSelectiveImports()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QVERIFY(backend.selectOfflineTarget("org.example.Editor"));
+        const QVariantMap settings{{"layout", "floating"}, {"matchTitle", false}, {"width", 700}, {"height", 500}};
+        QVERIFY(backend.saveRule(settings));
+        QCOMPARE(backend.savedRules().size(), 1);
+        const auto id = backend.savedRules().first().toMap().value("id").toString();
+        QVERIFY(backend.setRuleMetadata(id, "My editor", "Work", "code, work, code"));
+        QCOMPARE(backend.savedRules().first().toMap().value("tags").toStringList().size(), 2);
+        QVERIFY(backend.batchSetEnabled({id}, false));
+        QVERIFY(!backend.savedRules().first().toMap().value("enabled").toBool());
+        QVERIFY(!backend.batchSetEnabled({"nonexistent"}, true));
+        QVERIFY(!backend.savedRules().first().toMap().value("enabled").toBool());
+        const auto json = backend.exportSelected({id});
+        QCOMPARE(backend.previewImport(json).value("count").toInt(), 1);
+        QVERIFY(backend.importSelection(json, {0}, "merge"));
+        QCOMPARE(backend.savedRules().size(), 2);
+        QVERIFY(backend.savedRules()[0].toMap().value("id") != backend.savedRules()[1].toMap().value("id"));
+        QVERIFY(backend.importSelection(json, {0}, "replace"));
+        QCOMPARE(backend.savedRules().size(), 1);
+        QVERIFY(!backend.importSelection(json, {9}, "replace"));
+        QCOMPARE(backend.savedRules().size(), 1);
+        QVERIFY(!backend.importSelection(json, {0}, "bogus"));
+        QVERIFY(!backend.previewImport("[{}]").value("error").toString().isEmpty());
+        auto editable = backend.loadRuleForEditing(0);
+        editable["match"] = QVariantMap{{"class", "org.example.Other"}};
+        QVERIFY(backend.updateRule(0, editable));
+        QCOMPARE(backend.savedRules().first().toMap().value("match").toMap().value("class").toString(), QString("org.example.Other"));
+    }
+    void evaluatesAllMatchConditions()
+    {
+        const QVariantMap window{{"class", "foot"}, {"currentClass", "foot"},
+            {"title", "Initial"}, {"currentTitle", "Work 12"}, {"workspace", "2"}, {"xwayland", false}};
+        QVariantMap settings{{"match", QVariantMap{{"class", "foo"}, {"title", "^Work [0-9]+$"}, {"workspace", "2"}, {"xwayland", false}}},
+            {"classMatchMode", "contains"}, {"titleMatchMode", "regex"}};
+        QVERIFY(Backend::matchWindow(window, settings).value("matched").toBool());
+        auto match = settings.value("match").toMap(); match["workspace"] = "3"; settings["match"] = match;
+        QVERIFY(!Backend::matchWindow(window, settings).value("matched").toBool());
+        settings["match"] = QVariantMap{{"class", "foot"}, {"unknown_field", true}};
+        QVERIFY(Backend::matchWindow(window, settings).value("unknown").toBool());
+        settings["match"] = QVariantMap{{"class", "foot"}}; settings["excludeTitle"] = "^Work.*";
+        QVERIFY(!Backend::matchWindow(window, settings).value("matched").toBool());
+        settings["excludeTitle"] = "["; QVERIFY(Backend::matchWindow(window, settings).value("unknown").toBool());
+    }
+    void resolvesScaledPlacementAndFallback()
+    {
+        const QVariantList monitors{QVariantMap{{"name", "DP-1"}, {"width", 3840}, {"height", 2160},
+            {"scale", 2.0}, {"reserved", QVariantList{0, 40, 0, 0}}}};
+        const QVariantMap p{{"enabled", true}, {"monitor", "missing"}, {"fallback", "DP-1"},
+            {"unit", "percent"}, {"width", 50}, {"height", 50}, {"anchor", "bottom-right"}, {"margin", 24}};
+        const auto geometry = Backend::placementGeometry(p, monitors);
+        QCOMPARE(geometry.value("width").toInt(), 960);
+        QCOMPARE(geometry.value("height").toInt(), 520);
+        QCOMPARE(geometry.value("x").toInt(), 936);
+        QCOMPARE(geometry.value("y").toInt(), 536);
+        QCOMPARE(geometry.value("monitor").toString(), QString("DP-1"));
+        QVERIFY(geometry.value("usedFallback").toBool());
+        QVERIFY(Backend::placementGeometry(p, {}).contains("error"));
+        auto locked = p; locked.insert("aspectLock", true); locked.insert("aspect", 2.0);
+        QCOMPARE(Backend::placementGeometry(locked, monitors).value("height").toInt(), 480);
+        auto invalid = p; invalid.insert("width", -4);
+        QVERIFY(Backend::placementGeometry(invalid, monitors).contains("error"));
+    }
+    void controlStyleNavigationAndResponsiveLayout()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QFile config(dir.filePath("hyprland.lua"));
+        QVERIFY(config.open(QIODevice::WriteOnly));
+        config.write("-- isolated UI test\n");
+        config.close();
+        QFile script(dir.filePath("hyprctl"));
+        QVERIFY(script.open(QIODevice::WriteOnly));
+        script.write("#!/bin/sh\nif [ \"$2\" = clients ]; then echo '[{\"address\":\"0x1\",\"class\":\"foot\",\"initialClass\":\"foot\",\"title\":\"Terminal\",\"initialTitle\":\"Terminal\",\"workspace\":{\"name\":\"1\"},\"at\":[0,0],\"size\":[800,600]}]'; fi\nexit 0\n");
+        script.close();
+        QVERIFY(script.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        Backend backend(dir.path(), config.fileName(), script.fileName());
+        QVERIFY(backend.setPreference("onboarded", true));
+        Theme theme;
+        QQmlApplicationEngine engine;
+        QSignalSpy warnings(&engine, &QQmlEngine::warnings);
+        engine.rootContext()->setContextProperty("backend", &backend);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(window->property("windowsPage").toBool());
+        std::function<QQuickItem *(QQuickItem *, const QString &)> findVisual;
+        findVisual = [&](QQuickItem *parent, const QString &name) -> QQuickItem * {
+            if (parent->objectName() == name) return parent;
+            for (auto *child : parent->childItems()) {
+                if (auto *found = findVisual(child, name)) return found;
+            }
+            return nullptr;
+        };
+        auto item = [&](const char *name) { return findVisual(window->contentItem(), QString::fromLatin1(name)); };
+        auto navigate = [&](int section) {
+            QVERIFY(QMetaObject::invokeMethod(window, "navigate", Q_ARG(QVariant, section)));
+            // Layout polishing and Material animations run on subsequent frames.
+            QTest::qWait(200);
+            window->grabWindow();
+        };
+        QVERIFY(item("headerSearch"));
+        QVERIFY(item("windowsPage")->isVisible());
+        QTRY_VERIFY(item("windowEntry0"));
+        auto *entry = item("windowEntry0");
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          entry->mapToScene(QPointF(entry->width() / 2, entry->height() / 2)).toPoint());
+        QTRY_VERIFY(!window->property("windowsPage").toBool());
+        QCOMPARE(backend.selectedIndex(), 0);
+        const QList<QSize> sizes{{860, 680}, {1120, 820}, {1440, 900}};
+        for (const auto &size : sizes) {
+            window->resize(size);
+            for (int section = 0; section < 5; ++section) {
+                navigate(section);
+                QCOMPARE(window->property("category").toInt(), section);
+                QVERIFY(!window->property("windowsPage").toBool());
+                QVERIFY(item("editorPage")->isVisible());
+                QVERIFY(!item("windowsPage")->isVisible());
+                auto *bar = item("ruleActionBar");
+                QVERIFY(bar && bar->isVisible());
+                const QPointF pos = bar->mapToScene(QPointF());
+                QVERIFY(pos.y() >= 0);
+                QVERIFY(pos.y() + bar->height() <= window->height());
+                QVERIFY(pos.x() + bar->width() <= window->width());
+            }
+        }
+        // Every settings module has distinct, nonempty help, not just the
+        // first card on each page. Verify the actual hover and focus behavior.
+        const QStringList helpKeys{"layout", "size", "constraints", "workspace", "matching",
+                                   "opacity", "decoration", "effects", "focus", "performance", "saved"};
+        for (const auto &key : helpKeys) {
+            auto *heading = findVisual(window->contentItem(), "moduleHelp_" + key);
+            QVERIFY2(heading, qPrintable(key));
+            QVERIFY(heading->property("explanation").toString().size() > 60);
+            QVERIFY(findVisual(heading, "moduleInfoButton"));
+        }
+        const QStringList firstHelp{"layout", "workspace", "opacity", "focus", "saved"};
+        for (int section = 0; section < firstHelp.size(); ++section) {
+            navigate(section);
+            auto *heading = findVisual(window->contentItem(), "moduleHelp_" + firstHelp[section]);
+            auto *info = findVisual(heading, "moduleInfoButton");
+            QTest::qWait(200);
+            const QPoint point = info->mapToScene(QPointF(info->width() / 2, info->height() / 2)).toPoint();
+            QTest::mouseMove(window, point);
+            QTRY_VERIFY(heading->property("helpOpen").toBool());
+            QTest::mouseMove(window, QPoint(5, 5));
+            QTRY_VERIFY(!heading->property("helpOpen").toBool());
+            info->forceActiveFocus();
+            QTRY_VERIFY(heading->property("helpOpen").toBool());
+            item("headerSearch")->forceActiveFocus();
+            QTRY_VERIFY(!heading->property("helpOpen").toBool());
+        }
+        navigate(0);
+        QVERIFY(QMetaObject::invokeMethod(item("previewAction"), "clicked"));
+        QTRY_VERIFY(item("rulePreviewPanel")->isVisible());
+        window->resize(860, 680);
+        QCoreApplication::processEvents();
+        auto *expandedBar = item("ruleActionBar");
+        QTRY_VERIFY(expandedBar->mapToScene(QPointF()).y() + expandedBar->height() <= window->height());
+        QTest::keyClick(window, Qt::Key_5, Qt::AltModifier);
+        QTRY_COMPARE(window->property("category").toInt(), 4);
+        QTest::keyClick(window, Qt::Key_K, Qt::ControlModifier);
+        QTRY_VERIFY(item("headerSearch")->hasActiveFocus());
+        for (char key : QByteArray("no matching rule")) QTest::keyClick(window, key);
+        QTRY_COMPARE(window->property("ruleFilter").toString(), QString("no matching rule"));
+        navigate(-1);
+        item("headerSearch")->forceActiveFocus();
+        for (char key : QByteArray("missing window")) QTest::keyClick(window, key);
+        QTRY_COMPARE(window->property("windowFilter").toString(), QString("missing window"));
+        QTRY_COMPARE(window->property("visibleWindows").value<QJSValue>().toVariant().toList().size(), 0);
+        window->setProperty("windowFilter", "");
+        navigate(0);
+        // Exercise the real save/edit actions only against disposable config.
+        QVERIFY(QMetaObject::invokeMethod(item("saveRuleAction"), "clicked"));
+        auto *review = window->findChild<QObject *>("saveReview");
+        QVERIFY(review);
+        QVERIFY(QMetaObject::invokeMethod(review, "accept"));
+        QCOMPARE(backend.savedRules().size(), 1);
+        QVERIFY(QMetaObject::invokeMethod(window, "loadRule", Q_ARG(QVariant, 0)));
+        QCOMPARE(window->property("editingRuleIndex").toInt(), 0);
+        const auto editedId = window->property("editingRuleId").toString();
+        QVERIFY(!editedId.isEmpty());
+        QVERIFY(backend.duplicateRule(0));
+        QVERIFY(backend.moveRule(0, 1));
+        QVERIFY(QMetaObject::invokeMethod(window, "requestSave"));
+        QCOMPARE(review->property("ruleIndex").toInt(), 1);
+        QCOMPARE(backend.savedRules()[1].toMap().value("id").toString(), editedId);
+        QVERIFY(QMetaObject::invokeMethod(review, "reject"));
+        QVERIFY(backend.deleteRule(0));
+        QVERIFY(backend.deleteRule(0));
+        QTRY_VERIFY(!window->property("editTargetAvailable").toBool());
+        QVERIFY(backend.undo());
+        QTRY_VERIFY(window->property("editTargetAvailable").toBool());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_COMPARE(window->property("editingRuleIndex").toInt(), -1);
+        QCOMPARE(window->property("editingRuleId").toString(), QString());
+        const QString screenshots = qEnvironmentVariable("WINDOWTUNER_TEST_SCREENSHOTS");
+        if (!screenshots.isEmpty()) {
+            QDir().mkpath(screenshots);
+            window->setProperty("previewExpanded", false);
+            for (const auto &size : sizes) {
+                window->resize(size);
+                navigate(0);
+                QTest::qWait(150);
+                QVERIFY(window->grabWindow().save(screenshots + QString("/layout-%1x%2.png").arg(size.width()).arg(size.height())));
+            }
+            window->resize(1120, 820);
+            navigate(1);
+            auto *heading = findVisual(window->contentItem(), "moduleHelp_workspace");
+            auto *info = findVisual(heading, "moduleInfoButton");
+            QTest::mouseMove(window, info->mapToScene(QPointF(info->width() / 2, info->height() / 2)).toPoint());
+            QTRY_VERIFY(heading->property("helpOpen").toBool());
+            QTest::qWait(150);
+            QVERIFY(window->grabWindow().save(screenshots + "/workspace-help.png"));
+        }
+        QCOMPARE(warnings.size(), 0);
+    }
     void parsesWindowIdentity()
     {
         const auto windows = Backend::parseClients(R"([{"address":"0x123","class":"foot","initialClass":"foot","title":"Terminal","initialTitle":"Terminal","workspace":{"name":"2"},"at":[10,20],"size":[800,600],"pid":1234,"xwayland":false,"fullscreen":0,"pinned":false,"grouped":[],"stableId":"stable-foot","xdgTag":"","contentType":"none","focusHistoryID":0,"floating":true}])");
@@ -57,7 +942,7 @@ private slots:
         const QVariantMap settings{{"match", match}, {"classMatchMode", "contains"},
                                    {"titleMatchMode", "regex"}, {"layout", "keep"}};
         const QString rule = Backend::luaRule(window, settings);
-        QVERIFY(rule.contains("class = \"foot\""));
+        QVERIFY(rule.contains("class = \".*foot.*\""));
         QVERIFY(rule.contains("title = \"Settings.*\""));
         QVERIFY(rule.contains("workspace = \"2\""));
         QVERIFY(rule.contains("xwayland = false"));
@@ -95,6 +980,25 @@ private slots:
         const QVariantMap settings{{"layout", "floating"}, {"matchTitle", true},
                                    {"center", true}, {"width", 500}, {"height", 500}};
         QVERIFY(backend.saveRule(settings));
+        QVERIFY(backend.canUndo());
+        QVERIFY(backend.createBackup("Working setup"));
+        QVERIFY(backend.savePreset("Compact", settings));
+        QVERIFY(!backend.savePreset("Compact", settings));
+        const auto presetId = backend.presets().first().toMap().value("id").toString();
+        QCOMPARE(backend.presetSettings(presetId).value("width").toInt(), 500);
+        QVERIFY(!backend.presetSettings(presetId).contains("matchTitle"));
+        QVERIFY(backend.saveProfile("Work"));
+        const auto profileId = backend.profiles().first().toMap().value("id").toString();
+        QVERIFY(backend.profilePreview(profileId).contains("foot"));
+        QVERIFY(backend.reviewChanges(settings, 0).value("moduleAfter").toString().contains("hl.window_rule"));
+        QVERIFY(backend.undo());
+        QCOMPARE(backend.savedRules().size(), 0);
+        QVERIFY(backend.canRedo());
+        QVERIFY(backend.redo());
+        QCOMPARE(backend.savedRules().size(), 1);
+        QVERIFY(backend.tryGeometry(settings, 1));
+        QVERIFY(backend.trialActive());
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.trialActive(), 2500);
         QFile rules(dir.filePath("windowtuner.lua"));
         QVERIFY(rules.open(QIODevice::ReadOnly));
         const QByteArray lua = rules.readAll();
@@ -111,7 +1015,7 @@ private slots:
         rules.close();
         QFile updatedConfig(mainConfig);
         QVERIFY(updatedConfig.open(QIODevice::ReadOnly));
-        QVERIFY(updatedConfig.readAll().contains("require(\"hypr.windowtuner\")"));
+        QVERIFY(updatedConfig.readAll().contains("dofile("));
         QVERIFY(QFile::exists(mainConfig + ".windowtuner.bak"));
         QCOMPARE(backend.savedRules().size(), 1);
         QVERIFY(QFile::exists(dir.filePath("windowtuner.json")));
@@ -121,6 +1025,12 @@ private slots:
         QVERIFY(backend.duplicateRule(0));
         QCOMPARE(backend.savedRules().size(), 2);
         QVERIFY(backend.savedRules().at(0).toMap().value("conflict").toBool());
+        QCOMPARE(backend.inspectWindow().value("rules").toList().size(), 2);
+        QVERIFY(backend.inspectWindow().value("conflicts").toStringList().isEmpty());
+        auto conflicting = backend.savedRules().at(1).toMap().value("settings").toMap();
+        conflicting.insert("width", 640);
+        QVERIFY(backend.updateRule(1, conflicting));
+        QVERIFY(!backend.inspectWindow().value("conflicts").toStringList().isEmpty());
         QVERIFY(!backend.savedRules().at(0).toMap().value("conflictsWith").toList().isEmpty());
         QVERIFY(backend.moveRule(1, 0));
         QVERIFY(backend.applySavedRule(0));
@@ -130,7 +1040,12 @@ private slots:
         QCOMPARE(backend.savedRules().size(), 2);
         QFile failingHyprctl(fakeHyprctl);
         QVERIFY(failingHyprctl.open(QIODevice::WriteOnly | QIODevice::Truncate));
-        failingHyprctl.write("#!/bin/sh\nif [ \"$1\" = -j ] && [ \"$2\" = clients ]; then cat '" + fixture.toUtf8() + "'; exit 0; fi\nif [ \"$1\" = configerrors ]; then echo 'invalid test config'; exit 0; fi\nexit 0\n");
+        const QString ruleData = dir.filePath("windowtuner.json");
+        failingHyprctl.write("#!/bin/sh\nif [ \"$1\" = -j ] && [ \"$2\" = clients ]; then cat '" + fixture.toUtf8() +
+            "'; exit 0; fi\nif [ \"$1\" = configerrors ]; then "
+            "if [ -f '" + ruleData.toUtf8() + "' ] && grep -q '\"enabled\": false' '" + ruleData.toUtf8() + "'; "
+            "then echo 'invalid test config'; else echo '[]'; fi; "
+            "fi\nexit 0\n");
         failingHyprctl.close();
         QVERIFY(QFile::setPermissions(fakeHyprctl, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         QVERIFY(!backend.setRuleEnabled(0, false));
@@ -140,11 +1055,26 @@ private slots:
         failingHyprctl.close();
         QVERIFY(QFile::setPermissions(fakeHyprctl, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         QVERIFY(backend.deleteRule(0));
+        QVERIFY(backend.activateProfile(profileId));
+        QCOMPARE(backend.savedRules().size(), 1);
+        QVERIFY(backend.removeLibraryItem("presets", presetId));
+        QCOMPARE(backend.presets().size(), 0);
         QCOMPARE(backend.savedRules().size(), 1);
         QVERIFY(rules.open(QIODevice::ReadOnly));
-        QCOMPARE(rules.readAll().count("o.window("), 1);
+        QCOMPARE(rules.readAll().count("hl.window_rule("), 1);
+        rules.close();
+        QVERIFY(backend.restoreBackup(backend.backups().first().toMap().value("id").toString()));
+        QCOMPARE(backend.savedRules().size(), 1);
+        updatedConfig.close();
+        QVERIFY(updatedConfig.open(QIODevice::WriteOnly | QIODevice::Append));
+        updatedConfig.write("-- external edit\n");
+        updatedConfig.close();
+        QVERIFY(!backend.deleteRule(0));
+        QVERIFY(backend.status().contains("outside"));
+        QVERIFY(backend.reloadFromDisk());
+        QVERIFY(backend.deleteRule(0));
     }
 };
 
-QTEST_GUILESS_MAIN(WindowTunerTests)
+QTEST_MAIN(WindowTunerTests)
 #include "windowtuner_tests.moc"

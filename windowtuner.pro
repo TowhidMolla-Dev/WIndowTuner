@@ -5,5 +5,5 @@ TARGET = windowtuner
 TEMPLATE = app
 
 HEADERS += src/backend.h src/theme.h
-SOURCES += src/main.cpp src/backend.cpp src/theme.cpp
+SOURCES += src/main.cpp src/backend.cpp src/safety.cpp src/placement.cpp src/inspector.cpp src/workflows.cpp src/management.cpp src/appspace.cpp src/health.cpp src/theme.cpp
 RESOURCES += src/resources.qrc
