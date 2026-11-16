@@ -91,7 +91,7 @@ bool isPlacementOnly(const QJsonObject &rule)
         "match", "matchTitle", "classMatchMode", "titleMatchMode", "excludeTitle", "layout",
         "workspace", "noInitialFocus", "autostart", "launchCommand", "launchDesktop",
         "startupOnly", "startupWindow", "error"};
-    for (auto it = settings.cbegin(); it != settings.cend(); ++it)
+    for (auto it = settings.constBegin(); it != settings.constEnd(); ++it)
         if (!placementKeys.contains(it.key())) return false;
     return true;
 }
@@ -233,7 +233,7 @@ QVariantList Backend::applicationCatalog() const
     }
 
     QVariantList result;
-    for (auto it = entries.cbegin(); it != entries.cend(); ++it) {
+    for (auto it = entries.constBegin(); it != entries.constEnd(); ++it) {
         const Entry &row = it.value();
         QVariantMap item{{"class", row.klass}, {"name", row.name}, {"desktop", row.desktop},
             {"iconData", row.iconData},
@@ -568,7 +568,7 @@ QJsonObject Backend::appSpaceModuleConfig(const QJsonArray &rules, const QJsonOb
 {
     QJsonObject config;
     QJsonObject workspaceOut;
-    for (auto it = workspaces.cbegin(); it != workspaces.cend(); ++it) {
+    for (auto it = workspaces.constBegin(); it != workspaces.constEnd(); ++it) {
         const QJsonObject entry = it.value().toObject();
         workspaceOut.insert(it.key(), QJsonObject{{"monitor", entry.value("monitor").toString()},
             {"persistent", entry.value("persistent").toBool()}});
@@ -637,7 +637,7 @@ QVariantMap Backend::appSpaceImportPreview(const QString &path) const
     const QJsonObject sourceAliases = source.value("aliases").toObject();
     const auto aliased = [&sourceAliases](const QString &klass) {
         if (sourceAliases.contains(klass)) return sourceAliases.value(klass).toString();
-        for (auto it = sourceAliases.cbegin(); it != sourceAliases.cend(); ++it)
+        for (auto it = sourceAliases.constBegin(); it != sourceAliases.constEnd(); ++it)
             if (it.key().compare(klass, Qt::CaseInsensitive) == 0) return it.value().toString();
         return klass;
     };
@@ -688,7 +688,7 @@ bool Backend::importAppSpace(const QString &path)
     const QJsonObject sourceAliases = source.value("aliases").toObject();
     const auto aliased = [&sourceAliases](const QString &klass) {
         if (sourceAliases.contains(klass)) return sourceAliases.value(klass).toString();
-        for (auto it = sourceAliases.cbegin(); it != sourceAliases.cend(); ++it)
+        for (auto it = sourceAliases.constBegin(); it != sourceAliases.constEnd(); ++it)
             if (it.key().compare(klass, Qt::CaseInsensitive) == 0) return it.value().toString();
         return klass;
     };
@@ -751,7 +751,7 @@ bool Backend::importAppSpace(const QString &path)
 
     QJsonObject workspaces = workspaceData();
     const QJsonObject sourceWorkspaces = source.value("workspaces").toObject();
-    for (auto it = sourceWorkspaces.cbegin(); it != sourceWorkspaces.cend(); ++it) {
+    for (auto it = sourceWorkspaces.constBegin(); it != sourceWorkspaces.constEnd(); ++it) {
         const QJsonValue value = it.value();
         QJsonObject entry;
         if (value.isString()) {
@@ -765,7 +765,7 @@ bool Backend::importAppSpace(const QString &path)
     }
     QJsonObject monitors = monitorData();
     const QJsonObject sourceMonitors = source.value("monitors").toObject();
-    for (auto it = sourceMonitors.cbegin(); it != sourceMonitors.cend(); ++it)
+    for (auto it = sourceMonitors.constBegin(); it != sourceMonitors.constEnd(); ++it)
         monitors.insert(it.key(), it.value().toObject());
     if (!commitPlacementData(workspaces, monitors,
             tr("Imported %1 AppSpace rule(s).").arg(imported), true, rules))
