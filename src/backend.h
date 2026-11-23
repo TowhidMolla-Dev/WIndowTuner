@@ -59,6 +59,7 @@ public:
     Q_INVOKABLE bool moveRule(int index, int destination);
     Q_INVOKABLE bool updateRule(int index, const QVariantMap &settings);
     Q_INVOKABLE QVariantMap loadRuleForEditing(int index);
+    Q_INVOKABLE QVariantMap editorStateForWindow(int index) const;
     Q_INVOKABLE bool applySavedRule(int index);
     Q_INVOKABLE QString exportRules() const;
     Q_INVOKABLE bool importRules(const QString &json);
@@ -90,6 +91,7 @@ public:
                               const QJsonObject &monitors = {});
     static QVariantMap matchWindow(const QVariantMap &window, const QVariantMap &settings);
     Q_INVOKABLE QVariantMap testMatch(const QVariantMap &settings) const;
+    Q_INVOKABLE QVariantMap simulateRule(const QVariantMap &settings) const;
     Q_INVOKABLE QVariantMap inspectWindow() const;
     Q_INVOKABLE QVariantList externalRuleHints() const;
     QVariantList presets() const;

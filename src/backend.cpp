@@ -791,6 +791,51 @@ QVariantMap Backend::loadRuleForEditing(int index)
     return settings;
 }
 
+QVariantMap Backend::editorStateForWindow(int index) const
+{
+    if (index < 0 || index >= m_windows.size()) return {};
+    const QVariantMap window = m_windows.at(index).toMap();
+    QVariantList matches;
+    for (int i = 0; i < m_savedRules.size(); ++i) {
+        const QVariantMap rule = m_savedRules.at(i).toMap();
+        if (!rule.value("enabled", true).toBool()) continue;
+        QVariantMap settings = rule.value("settings").toMap();
+        QVariantMap match = rule.value("match").toMap();
+        if (match.isEmpty()) {
+            match.insert("class", rule.value("class"));
+            if (!rule.value("title").toString().isEmpty()) match.insert("title", rule.value("title"));
+        }
+        settings.insert("match", match);
+        if (!matchWindow(window, settings).value("matched").toBool()) continue;
+        int specificity = match.size();
+        if (match.contains("title")) specificity += 8;
+        if (settings.value("classMatchMode", "exact").toString() == "exact") specificity += 2;
+        if (settings.value("titleMatchMode", "exact").toString() == "exact" && match.contains("title"))
+            specificity += 4;
+        matches.append(QVariantMap{{"index", i}, {"id", rule.value("id")},
+            {"name", rule.value("name", rule.value("class"))}, {"settings", settings},
+            {"specificity", specificity}});
+    }
+    std::sort(matches.begin(), matches.end(), [](const QVariant &left, const QVariant &right) {
+        const QVariantMap a = left.toMap(), b = right.toMap();
+        const int scoreA = a.value("specificity").toInt(), scoreB = b.value("specificity").toInt();
+        return scoreA == scoreB ? a.value("index").toInt() < b.value("index").toInt()
+                                : scoreA > scoreB;
+    });
+    QVariantMap result{{"window", window}, {"matchingRuleCount", matches.size()},
+        {"matchingRules", matches}};
+    if (!matches.isEmpty()) {
+        const QVariantMap best = matches.first().toMap();
+        result.insert("ruleIndex", best.value("index"));
+        result.insert("ruleId", best.value("id"));
+        result.insert("ruleName", best.value("name"));
+        result.insert("settings", best.value("settings"));
+    } else {
+        result.insert("ruleIndex", -1);
+    }
+    return result;
+}
+
 bool Backend::applySavedRule(int index)
 {
     if (index < 0 || index >= m_savedRules.size()) {

@@ -943,9 +943,21 @@ private slots:
         config.close();
         QFile script(dir.filePath("hyprctl"));
         QVERIFY(script.open(QIODevice::WriteOnly));
-        script.write("#!/bin/sh\nif [ \"$2\" = clients ]; then echo '[{\"address\":\"0x1\",\"class\":\"foot\",\"initialClass\":\"foot\",\"title\":\"Terminal\",\"initialTitle\":\"Terminal\",\"workspace\":{\"name\":\"1\"},\"monitor\":0,\"at\":[0,0],\"size\":[800,600]}]'; fi\nif [ \"$2\" = monitors ]; then echo '[{\"id\":0,\"name\":\"DP-1\",\"description\":\"Test Display\",\"width\":1920,\"height\":1080,\"scale\":1,\"activeWorkspace\":{\"id\":1,\"name\":\"1\"}}]'; fi\nexit 0\n");
+        script.write("#!/bin/sh\nif [ \"$2\" = clients ]; then echo '[{\"address\":\"0x1\",\"class\":\"foot\",\"initialClass\":\"foot\",\"title\":\"Terminal\",\"initialTitle\":\"Terminal\",\"workspace\":{\"name\":\"1\"},\"monitor\":0,\"at\":[135,240],\"size\":[800,600],\"floating\":true,\"pinned\":true},{\"address\":\"0x2\",\"class\":\"firefox\",\"initialClass\":\"firefox\",\"title\":\"Browser\",\"initialTitle\":\"Browser\",\"workspace\":{\"name\":\"1\"},\"monitor\":0,\"at\":[400,200],\"size\":[1000,700],\"floating\":false}]'; fi\nif [ \"$2\" = monitors ]; then echo '[{\"id\":0,\"name\":\"DP-1\",\"description\":\"Test Display\",\"x\":0,\"y\":0,\"width\":1920,\"height\":1080,\"scale\":1,\"activeWorkspace\":{\"id\":1,\"name\":\"1\"}}]'; fi\nexit 0\n");
         script.close();
         QVERIFY(script.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        QFile savedRules(dir.filePath("windowtuner.json"));
+        QVERIFY(savedRules.open(QIODevice::WriteOnly));
+        savedRules.write(R"([{
+            "id":"ui-rule","name":"Terminal rule","class":"foot","title":"Terminal",
+            "match":{"class":"foot","title":"Terminal"},
+            "settings":{"layout":"floating","width":560,"height":400,"workspace":"2","pin":true,
+                "opacityEnabled":true,"opacityActive":0.6,"opacityInactive":0.75,
+                "borderEnabled":true,"borderSize":5,"roundingEnabled":true,"rounding":12,
+                "noBlur":true,"noShadow":true,"noInitialFocus":true,"noAnim":true,
+                "noDim":true,"noVrr":true,"persistentSize":true}
+        }])");
+        savedRules.close();
         Backend backend(dir.path(), config.fileName(), script.fileName());
         QVERIFY(backend.setPreference("onboarded", true));
         Theme theme;
@@ -994,8 +1006,8 @@ private slots:
         QVERIFY(activeWorkspaceLabel && activeWorkspaceLabel->isVisible());
         auto *openApps = item("desktopWorkspaceOpenApps0-1");
         QVERIFY(openApps);
-        QCOMPARE(openApps->property("text").toString(), QString("Terminal"));
-        QCOMPARE(backend.windows().size(), 1);
+        QCOMPARE(openApps->property("text").toString(), QString("Terminal, Browser"));
+        QCOMPARE(backend.windows().size(), 2);
         clickItem(item("desktopScenesAction"));
         auto *scenesDialog = window->findChild<QObject *>("scenesDialog");
         QVERIFY(scenesDialog);
@@ -1011,7 +1023,7 @@ private slots:
         clickItem(sceneRow);
         auto *scenePreview = item("scenePreviewSummary");
         QVERIFY(scenePreview);
-        QTRY_VERIFY(scenePreview->property("text").toString().contains("1 open window"));
+        QTRY_VERIFY(scenePreview->property("text").toString().contains("2 open window(s) match"));
         const QString scenesScreenshots = qEnvironmentVariable("WINDOWTUNER_TEST_SCREENSHOTS");
         if (!scenesScreenshots.isEmpty()) {
             QDir().mkpath(scenesScreenshots);
@@ -1070,6 +1082,8 @@ private slots:
         clickItem(entry);
         QTRY_VERIFY(!window->property("windowsPage").toBool());
         QCOMPARE(backend.selectedIndex(), 0);
+        QCOMPARE(window->property("editingRuleIndex").toInt(), 0);
+        QCOMPARE(window->property("editingRuleId").toString(), QString("ui-rule"));
         const QList<QSize> sizes{{860, 680}, {1120, 820}, {1440, 900}};
         for (const auto &size : sizes) {
             window->resize(size);
@@ -1081,6 +1095,90 @@ private slots:
                 QVERIFY(!item("windowsPage")->isVisible());
                 auto *bar = item("ruleActionBar");
                 QVERIFY(bar && bar->isVisible());
+                if (section == 0) {
+                    QVERIFY(item("widthField"));
+                    QVERIFY(item("heightField"));
+                    QCOMPARE(item("widthField")->property("value").toInt(), 800);
+                    QCOMPARE(item("heightField")->property("value").toInt(), 600);
+                    QCOMPARE(item("xField")->property("value").toInt(), 135);
+                    QCOMPARE(item("yField")->property("value").toInt(), 240);
+                    QVERIFY(item("centerBox")->property("checked").toBool() == false);
+                    QVERIFY(item("positionBox")->property("checked").toBool());
+                    if (size.width() >= 1060) {
+                        auto *livePreview = item("livePreviewCard");
+                        QVERIFY(livePreview && livePreview->isVisible());
+                        QVERIFY(item("previewCanvas"));
+                        QVERIFY(item("previewMonitor"));
+                        QVERIFY(item("previewWindowShape"));
+                        QVERIFY(item("previewGeometrySummary")->property("text").toString().contains("800 × 600"));
+                        QVERIFY(item("previewOpacitySummary")->property("text").toString().contains("0.60"));
+                        QVERIFY(item("previewChangeSummary"));
+                        QVERIFY(item("impactWindowList"));
+                        QVERIFY(item("impactFilter_matches")->isVisible());
+                        QVERIFY(item("impactFilter_uncertain")->isVisible());
+                        QVERIFY(item("impactFilter_unaffected")->isVisible());
+                        QVERIFY(item("impactWindowName")->property("text").toString().contains("Terminal"));
+                        QVERIFY(item("impactWindowReason")->property("text").toString().contains("All available conditions match"));
+                        clickItem(item("impactFilter_unaffected"));
+                        QVERIFY(item("impactWindowName")->property("text").toString().contains("Browser"));
+                        QVERIFY(item("impactWindowReason")->property("text").toString().contains("does not match"));
+                        clickItem(item("impactFilter_matches"));
+                        const QString rulePreviewBefore = item("rulePreviewText")->property("text").toString();
+                        item("widthField")->setProperty("value", 811);
+                        QTRY_VERIFY(item("previewGeometrySummary")->property("text").toString().contains("811 × 600"));
+                        QTRY_VERIFY(item("rulePreviewText")->property("text").toString() != rulePreviewBefore);
+                        item("widthField")->setProperty("value", 800);
+                        clickItem(item("previewMode_current"));
+                        QVERIFY(item("previewOpacitySummary")->property("text").toString().contains("unavailable"));
+                        clickItem(item("previewMode_compare"));
+                        QVERIFY(item("previewGeometrySummary")->property("text").toString().contains("Current 800 × 600 → Draft 800 × 600"));
+                        QVERIFY(item("previewCurrentShape")->isVisible());
+                        QVERIFY(item("previewWindowShape")->isVisible());
+                        QVERIFY(item("previewCompareLegend")->isVisible());
+                        const QString previewScreenshots = qEnvironmentVariable("WINDOWTUNER_TEST_SCREENSHOTS");
+                        if (!previewScreenshots.isEmpty())
+                            QVERIFY(window->grabWindow().save(previewScreenshots + "/layout-compare-1120x820.png"));
+                        clickItem(item("previewMode_draft"));
+                    } else {
+                        QVERIFY(!item("livePreviewCard")->isVisible());
+                        auto *smallPreviewToggle = item("smallPreviewToggle");
+                        QVERIFY(smallPreviewToggle && smallPreviewToggle->isVisible());
+                        clickItem(smallPreviewToggle);
+                        QTRY_VERIFY(item("livePreviewCard")->isVisible());
+                        QVERIFY(!item("settingsScroll")->isVisible());
+                        QVERIFY(item("previewGeometrySummary")->isVisible());
+                        QVERIFY(item("impactFilter_matches")->isVisible());
+                        QVERIFY(item("impactFilter_unaffected")->isVisible());
+                        const QString narrowPreviewScreenshots = qEnvironmentVariable("WINDOWTUNER_TEST_SCREENSHOTS");
+                        if (!narrowPreviewScreenshots.isEmpty())
+                            QVERIFY(window->grabWindow().save(narrowPreviewScreenshots + "/layout-preview-860x680.png"));
+                        clickItem(smallPreviewToggle);
+                        QTRY_VERIFY(item("settingsScroll")->isVisible());
+                    }
+                }
+                if (section == 1) {
+                    QCOMPARE(item("workspaceField")->property("text").toString(), QString("2"));
+                    QVERIFY(item("pinBox")->property("checked").toBool());
+                }
+                if (section == 2) {
+                    QVERIFY(item("opacityBox")->property("checked").toBool());
+                    QCOMPARE(item("activeOpacity")->property("value").toDouble(), 0.6);
+                    QCOMPARE(item("inactiveOpacity")->property("value").toDouble(), 0.75);
+                    QVERIFY(item("borderBox")->property("checked").toBool());
+                    QCOMPARE(item("borderSize")->property("value").toInt(), 5);
+                    QVERIFY(item("roundingBox")->property("checked").toBool());
+                    QCOMPARE(item("roundingField")->property("value").toInt(), 12);
+                }
+                if (section == 3) {
+                    QVERIFY(item("focusBox")->property("checked").toBool());
+                    QVERIFY(item("animationBox")->property("checked").toBool());
+                    QVERIFY(item("dimBox")->property("checked").toBool());
+                    QVERIFY(item("vrrBox")->property("checked").toBool());
+                    QVERIFY(item("persistentSizeBox")->property("checked").toBool());
+                }
+                if (section == 4)
+                    QVERIFY(item("selectedWindowRuleHint")->property("text").toString()
+                                .contains("Terminal rule"));
                 const QPointF pos = bar->mapToScene(QPointF());
                 QVERIFY(pos.y() >= 0);
                 QVERIFY(pos.y() + bar->height() <= window->height());
@@ -1185,6 +1283,23 @@ private slots:
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_COMPARE(window->property("editingRuleIndex").toInt(), -1);
         QCOMPARE(window->property("editingRuleId").toString(), QString());
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseWindow", Q_ARG(QVariant, 0)));
+        navigate(0);
+        item("widthField")->setProperty("value", 811);
+        navigate(2);
+        item("activeOpacity")->setProperty("value", 0.42);
+        QVERIFY(QMetaObject::invokeMethod(item("cancelEditAction"), "clicked"));
+        QTRY_COMPARE(window->property("editingRuleIndex").toInt(), -1);
+        QCOMPARE(window->property("editingRuleId").toString(), QString());
+        navigate(0);
+        QCOMPARE(item("widthField")->property("value").toInt(), 800);
+        navigate(2);
+        QCOMPARE(item("activeOpacity")->property("value").toDouble(), 0.6);
+        item("widthField")->setProperty("value", 811);
+        QVERIFY(item("cancelEditAction")->isVisible());
+        QVERIFY(QMetaObject::invokeMethod(item("cancelEditAction"), "clicked"));
+        navigate(0);
+        QCOMPARE(item("widthField")->property("value").toInt(), 800);
         const QString screenshots = qEnvironmentVariable("WINDOWTUNER_TEST_SCREENSHOTS");
         if (!screenshots.isEmpty()) {
             QDir().mkpath(screenshots);

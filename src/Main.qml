@@ -146,8 +146,11 @@ ApplicationWindow {
     readonly property var editingRule: backend.savedRules.find(rule => rule.id === editingRuleId) || ({})
     readonly property bool editTargetAvailable: !editingRuleId || !!editingRule.id
     property bool previewExpanded: false
+    property int previewRevision: 0
     property bool editorReady: false
     property string cleanDraft: ""
+    property var selectedWindowBaseline: ({})
+    property string selectionSettingsNote: ""
     readonly property bool dirty: editorReady && JSON.stringify(options()) !== cleanDraft
     property bool allowClose: false
     property int pendingWindow: -1
@@ -206,12 +209,61 @@ ApplicationWindow {
         }
     }
     function markClean() { cleanDraft = JSON.stringify(options()) }
+    function initializeSelectedWindow(index) {
+        const state = backend.editorStateForWindow(index)
+        const target = state.window || backend.selectedWindow
+        const size = target.size || []
+        const at = target.at || []
+        const monitor = backend.monitors.find(item => item.id === target.monitor) || ({})
+        const match = state.settings ? (state.settings.match || {}) : {}
+        if (!state.settings) {
+            match["class"] = target["class"] || target.currentClass || ""
+            if (target.title) match.title = target.title
+        }
+        const settings = Object.assign({}, state.settings || {})
+        settings.match = match
+        settings.layout = target.floating ? "floating" : "tiled"
+        if (size.length === 2) {
+            settings.width = size[0]
+            settings.height = size[1]
+        }
+        settings.center = false
+        settings.setPosition = at.length === 2
+        if (at.length === 2) {
+            settings.x = at[0] - (monitor.x || 0)
+            settings.y = at[1] - (monitor.y || 0)
+        }
+        settings.pin = !!target.pinned
+        if (!state.settings || settings.workspace === undefined)
+            settings.workspace = target.workspace || ""
+
+        editingRuleIndex = state.ruleIndex >= 0 ? state.ruleIndex : -1
+        editingRuleId = editingRuleIndex >= 0 ? state.ruleId : ""
+        editorMatch = match
+        applySettings(settings)
+        selectionSettingsNote = state.matchingRuleCount > 0
+            ? qsTr("Configured values are prefilled from the most specific matching WindowTuner rule: %1. Live size, position, layout, and pin state come from this window; effective values from external/global rules are not queried.%2")
+                .arg(state.ruleName)
+                .arg(state.matchingRuleCount > 1
+                    ? qsTr(" %1 rules match; review Saved Rules for overlaps.").arg(state.matchingRuleCount)
+                    : "")
+            : qsTr("Live size, position, layout, workspace, and pin state come from this window. Hyprland does not report effective per-window opacity, decoration, effects, or behavior here; those controls show WindowTuner overrides only.");
+    }
     function chooseWindow(index) {
         if (dirty) { pendingWindow = index; pendingRule = -1; discardOnly = false; discardDialog.open(); return }
-        backend.selectWindow(index); editingRuleIndex = -1; editingRuleId = ""; editorMatch = ({})
-        classPatternField.text = backend.selectedWindow.currentClass || backend.selectedWindow["class"] || ""
-        titlePatternField.text = backend.selectedWindow.currentTitle || backend.selectedWindow.title || ""
+        backend.selectWindow(index)
+        initializeSelectedWindow(index)
+        selectedWindowBaseline = JSON.parse(JSON.stringify(options()))
         navigate(0); markClean()
+    }
+    function cancelEdit() {
+        const baseline = Object.keys(selectedWindowBaseline).length
+            ? selectedWindowBaseline
+            : (cleanDraft ? JSON.parse(cleanDraft) : {})
+        if (Object.keys(baseline).length) applySettings(baseline)
+        editingRuleIndex = -1
+        editingRuleId = ""
+        markClean()
     }
     function requestSave() {
         if (!editTargetAvailable) { missingRuleNotice.open(); return }
@@ -280,7 +332,12 @@ ApplicationWindow {
         }
         onAccepted: {
             const ok = ruleIndex >= 0 ? backend.updateRule(ruleIndex, pending) : backend.saveRule(pending)
-            if (ok) { win.editingRuleIndex = -1; win.editingRuleId = ""; win.markClean() }
+            if (ok) {
+                win.editingRuleIndex = -1
+                win.editingRuleId = ""
+                win.selectedWindowBaseline = JSON.parse(JSON.stringify(win.options()))
+                win.markClean()
+            }
         }
     }
     SafetyDialog { id: safetyDialog; host: win }
@@ -334,6 +391,65 @@ ApplicationWindow {
             }
         }
         return result
+    }
+    readonly property var selectedWindowRuleNames: {
+        if (backend.selectedIndex < 0) return []
+        const state = backend.editorStateForWindow(backend.selectedIndex)
+        return (state.matchingRules || []).map(rule => rule.name)
+    }
+    readonly property var draftSettings: options()
+    readonly property var draftImpact: backend.simulateRule(draftSettings)
+    readonly property var draftImpactCounts: draftImpact
+    property string previewMode: "draft"
+    property string impactFilter: "matches"
+    property bool previewFocus: false
+    readonly property var previewMonitorInfo: backend.monitors.find(item => item.id === backend.selectedWindow.monitor)
+        || ({name: qsTr("Monitor"), width: 1920, height: 1080, x: 0, y: 0})
+    readonly property real previewScaleFactor: Math.min(
+        (previewCanvas.width - 16) / Math.max(1, previewMonitorInfo.width || 1920),
+        (previewCanvas.height - 16) / Math.max(1, previewMonitorInfo.height || 1080))
+    readonly property var visibleImpactWindows: (draftImpact[impactFilter] || [])
+        .map(result => Object.assign({category: impactFilter}, result))
+
+    function previewWindowGeometry(proposed) {
+        const target = backend.selectedWindow
+        const liveSize = target.size || [600, 420]
+        const draft = draftSettings
+        const width = Number(proposed ? (draft.width || liveSize[0]) : liveSize[0])
+        const height = Number(proposed ? (draft.height || liveSize[1]) : liveSize[1])
+        let x = (target.at || [0, 0])[0] - (previewMonitorInfo.x || 0)
+        let y = (target.at || [0, 0])[1] - (previewMonitorInfo.y || 0)
+        if (proposed) {
+            if (draft.center) {
+                x = ((previewMonitorInfo.width || 1920) - width) / 2
+                y = ((previewMonitorInfo.height || 1080) - height) / 2
+            } else if (draft.setPosition) {
+                x = Number(draft.x || 0)
+                y = Number(draft.y || 0)
+            }
+        }
+        x = Math.max(0, Math.min(x, Math.max(0, (previewMonitorInfo.width || 1920) - width)))
+        y = Math.max(0, Math.min(y, Math.max(0, (previewMonitorInfo.height || 1080) - height)))
+        return {x: x, y: y, width: width, height: height}
+    }
+    function previewChangeSummary() {
+        const target = backend.selectedWindow
+        const draft = draftSettings
+        const liveSize = target.size || [0, 0]
+        const changes = []
+        const currentLayout = target.floating ? "floating" : "tiled"
+        const nextLayout = draft.layout === "keep" ? currentLayout : draft.layout
+        const nextWidth = Number(draft.width || liveSize[0])
+        const nextHeight = Number(draft.height || liveSize[1])
+        if (nextLayout !== currentLayout)
+            changes.push(qsTr("Layout %1 → %2").arg(currentLayout).arg(nextLayout))
+        if (nextWidth !== Number(liveSize[0]) || nextHeight !== Number(liveSize[1]))
+            changes.push(qsTr("Size %1 × %2 → %3 × %4").arg(liveSize[0]).arg(liveSize[1]).arg(nextWidth).arg(nextHeight))
+        const live = previewWindowGeometry(false)
+        const next = previewWindowGeometry(true)
+        if ((draft.center || draft.setPosition) && (live.x !== next.x || live.y !== next.y))
+            changes.push(qsTr("Position %1, %2 → %3, %4").arg(Math.round(live.x)).arg(Math.round(live.y)).arg(Math.round(next.x)).arg(Math.round(next.y)))
+        return changes.length ? changes.join("\n") : qsTr("No geometry changes from the selected window.")
     }
 
     function options() {
@@ -392,7 +508,7 @@ ApplicationWindow {
         })
     }
 
-    function refreshPreview() { preview.text = backend.previewRule(options()) }
+    function refreshPreview() { previewRevision++ }
     function navigate(section) {
         desktopsPage = section === -2
         windowsPage = section === -1
@@ -1230,6 +1346,13 @@ ApplicationWindow {
                     Item { Layout.fillWidth: true }
                     ComboBox { objectName: "editorMode"; model: [qsTr("Basic"), qsTr("Advanced")]; currentIndex: win.advancedMode ? 1 : 0; onActivated: win.advancedMode = currentIndex === 1 }
                     Button {
+                        objectName: "smallPreviewToggle"
+                        visible: win.width < 1060 && backend.selectedIndex >= 0
+                        text: win.previewFocus ? qsTr("Back to settings") : qsTr("Visual preview")
+                        flat: true
+                        onClicked: win.previewFocus = !win.previewFocus
+                    }
+                    Button {
                         text: qsTr("Change window")
                         flat: true
                         onClicked: win.navigate(-1)
@@ -1273,10 +1396,28 @@ ApplicationWindow {
                     }
                 }
 
-                ScrollView {
-                    id: settingsScroll
+                Label {
+                    objectName: "selectionSettingsNote"
+                    Layout.fillWidth: true
+                    visible: backend.selectedIndex >= 0 && win.selectionSettingsNote.length > 0
+                    text: win.selectionSettingsNote
+                    color: win.mutedForeground
+                    font.pixelSize: 11
+                    wrapMode: Text.WordWrap
+                }
+
+                RowLayout {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    spacing: 12
+
+                ScrollView {
+                    id: settingsScroll
+                    objectName: "settingsScroll"
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 320
+                    Layout.fillHeight: true
+                    visible: !win.previewFocus || win.width >= 1060
                     clip: true
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
@@ -1374,20 +1515,20 @@ ApplicationWindow {
                                             ColumnLayout {
                                                 Layout.fillWidth: true
                                                 Label { text: qsTr("Width"); font.pixelSize: 11; opacity: 0.7 }
-                                                SpinBox { id: widthField; Layout.fillWidth: true; from: 100; to: 10000; value: 600; editable: true; onValueChanged: win.refreshPreview() }
+                                                SpinBox { id: widthField; objectName: "widthField"; Layout.fillWidth: true; from: 1; to: 10000; value: 600; editable: true; onValueChanged: win.refreshPreview() }
                                             }
                                             ColumnLayout {
                                                 Layout.fillWidth: true
                                                 Label { text: qsTr("Height"); font.pixelSize: 11; opacity: 0.7 }
-                                                SpinBox { id: heightField; Layout.fillWidth: true; from: 100; to: 10000; value: 420; editable: true; onValueChanged: win.refreshPreview() }
+                                                SpinBox { id: heightField; objectName: "heightField"; Layout.fillWidth: true; from: 1; to: 10000; value: 420; editable: true; onValueChanged: win.refreshPreview() }
                                             }
                                         }
                                         Label { Layout.fillWidth: true; visible: !!win.fieldErrors.width || !!win.fieldErrors.height; text: (win.fieldErrors.width || "") + "\n" + (win.fieldErrors.height || ""); color: "#ffb778"; wrapMode: Text.WordWrap }
                                         RowLayout {
                                             Layout.fillWidth: true
-                                            CheckBox { id: centerBox; text: qsTr("Center on monitor"); checked: true; onToggled: { if (checked) positionBox.checked = false; win.refreshPreview() } }
+                                                CheckBox { id: centerBox; objectName: "centerBox"; text: qsTr("Center on monitor"); checked: true; onToggled: { if (checked) positionBox.checked = false; win.refreshPreview() } }
                                             Item { Layout.fillWidth: true }
-                                            CheckBox { id: positionBox; text: qsTr("Set position"); onToggled: { if (checked) centerBox.checked = false; win.refreshPreview() } }
+                                            CheckBox { id: positionBox; objectName: "positionBox"; text: qsTr("Set position"); onToggled: { if (checked) centerBox.checked = false; win.refreshPreview() } }
                                         }
                                         RowLayout {
                                             Layout.fillWidth: true
@@ -1395,12 +1536,12 @@ ApplicationWindow {
                                             ColumnLayout {
                                                 Layout.fillWidth: true
                                                 Label { text: qsTr("X coordinate"); font.pixelSize: 11; opacity: 0.7 }
-                                                SpinBox { id: xField; Layout.fillWidth: true; from: 0; to: 10000; value: 80; onValueChanged: win.refreshPreview() }
+                                                SpinBox { id: xField; objectName: "xField"; Layout.fillWidth: true; from: 0; to: 10000; value: 80; onValueChanged: win.refreshPreview() }
                                             }
                                             ColumnLayout {
                                                 Layout.fillWidth: true
                                                 Label { text: qsTr("Y coordinate"); font.pixelSize: 11; opacity: 0.7 }
-                                                SpinBox { id: yField; Layout.fillWidth: true; from: 0; to: 10000; value: 80; onValueChanged: win.refreshPreview() }
+                                                SpinBox { id: yField; objectName: "yField"; Layout.fillWidth: true; from: 0; to: 10000; value: 80; onValueChanged: win.refreshPreview() }
                                             }
                                         }
                                     }
@@ -1463,7 +1604,8 @@ ApplicationWindow {
                                             spacing: 5
                                             Label { text: qsTr("Workspace"); font.pixelSize: 11; opacity: 0.7 }
                                             TextField {
-                                                id: workspaceField
+                                                 id: workspaceField
+                                                 objectName: "workspaceField"
                                                 Layout.fillWidth: true
                                                 placeholderText: qsTr("Leave empty to keep the current workspace")
                                                 onTextChanged: win.refreshPreview()
@@ -1471,7 +1613,7 @@ ApplicationWindow {
                                             Label { text: qsTr("Examples: 2, 3 silent, name:chat"); font.pixelSize: 10; opacity: 0.5 }
                                         }
                                         Rectangle { Layout.fillWidth: true; height: 1; color: win.outline }
-                                        CheckBox { id: pinBox; text: qsTr("Pin on every workspace"); onToggled: win.refreshPreview() }
+                                         CheckBox { id: pinBox; objectName: "pinBox"; text: qsTr("Pin on every workspace"); onToggled: win.refreshPreview() }
                                         Label { text: qsTr("Pinned windows stay visible when you switch workspaces."); font.pixelSize: 11; opacity: 0.55; wrapMode: Text.WordWrap }
                                     }
                                 }
@@ -1571,20 +1713,20 @@ ApplicationWindow {
                                                 Label { text: qsTr("Adjust transparency for focused and unfocused states."); font.pixelSize: 11; opacity: 0.58 }
                                             }
                                             Item { Layout.fillWidth: true }
-                                            CheckBox { id: opacityBox; text: qsTr("Enable"); onToggled: win.refreshPreview() }
+                                             CheckBox { id: opacityBox; objectName: "opacityBox"; text: qsTr("Enable"); onToggled: win.refreshPreview() }
                                         }
                                         RowLayout {
                                             Layout.fillWidth: true
                                             enabled: opacityBox.checked
                                             Label { Layout.preferredWidth: 95; text: qsTr("Focused") }
-                                            Slider { id: activeOpacity; Layout.fillWidth: true; from: 0.1; to: 1; value: 1; onValueChanged: win.refreshPreview() }
+                                             Slider { id: activeOpacity; objectName: "activeOpacity"; Layout.fillWidth: true; from: 0.1; to: 1; value: 1; onValueChanged: win.refreshPreview() }
                                             Label { Layout.preferredWidth: 38; text: activeOpacity.value.toFixed(2); font.family: "monospace" }
                                         }
                                         RowLayout {
                                             Layout.fillWidth: true
                                             enabled: opacityBox.checked
                                             Label { Layout.preferredWidth: 95; text: qsTr("Unfocused") }
-                                            Slider { id: inactiveOpacity; Layout.fillWidth: true; from: 0.1; to: 1; value: 0.9; onValueChanged: win.refreshPreview() }
+                                             Slider { id: inactiveOpacity; objectName: "inactiveOpacity"; Layout.fillWidth: true; from: 0.1; to: 1; value: 0.9; onValueChanged: win.refreshPreview() }
                                             Label { Layout.preferredWidth: 38; text: inactiveOpacity.value.toFixed(2); font.family: "monospace" }
                                         }
                                     }
@@ -1603,16 +1745,16 @@ ApplicationWindow {
                                         }
                                         RowLayout {
                                             Layout.fillWidth: true
-                                            CheckBox { id: borderBox; text: qsTr("Set border width"); onToggled: win.refreshPreview() }
+                                             CheckBox { id: borderBox; objectName: "borderBox"; text: qsTr("Set border width"); onToggled: win.refreshPreview() }
                                             Item { Layout.fillWidth: true }
-                                            SpinBox { id: borderSize; from: 0; to: 20; value: 2; enabled: borderBox.checked; onValueChanged: win.refreshPreview() }
+                                             SpinBox { id: borderSize; objectName: "borderSize"; from: 0; to: 20; value: 2; enabled: borderBox.checked; onValueChanged: win.refreshPreview() }
                                             Label { text: qsTr("px"); opacity: 0.55 }
                                         }
                                         RowLayout {
                                             Layout.fillWidth: true
-                                            CheckBox { id: roundingBox; text: qsTr("Override corner rounding"); onToggled: win.refreshPreview() }
+                                             CheckBox { id: roundingBox; objectName: "roundingBox"; text: qsTr("Override corner rounding"); onToggled: win.refreshPreview() }
                                             Item { Layout.fillWidth: true }
-                                            SpinBox { id: roundingField; from: 0; to: 100; value: 8; enabled: roundingBox.checked; onValueChanged: win.refreshPreview() }
+                                             SpinBox { id: roundingField; objectName: "roundingField"; from: 0; to: 100; value: 8; enabled: roundingBox.checked; onValueChanged: win.refreshPreview() }
                                             Label { text: qsTr("px"); opacity: 0.55 }
                                         }
                                     }
@@ -1655,7 +1797,7 @@ ApplicationWindow {
                                             title: qsTr("Focus & interaction"); helpKey: "focus"
                                             explanation: qsTr("Prevent matching windows from taking keyboard focus automatically when they open. This is useful for passive panels and notifications. You can still focus the window yourself later; the option does not disable keyboard or mouse input.")
                                         }
-                                        CheckBox { id: focusBox; text: qsTr("Don't focus this window when it opens"); onToggled: win.refreshPreview() }
+                                         CheckBox { id: focusBox; objectName: "focusBox"; text: qsTr("Don't focus this window when it opens"); onToggled: win.refreshPreview() }
                                         Label { text: qsTr("Useful for notification windows and passive panels."); font.pixelSize: 11; opacity: 0.58; wrapMode: Text.WordWrap }
                                     }
                                 }
@@ -1671,10 +1813,10 @@ ApplicationWindow {
                                             title: qsTr("Performance & persistence"); helpKey: "performance"
                                             explanation: qsTr("Set per-window exceptions for animations, inactive-window dimming, and variable refresh rate (VRR). Remember floating size asks Hyprland to preserve the floating size for matching windows. These settings apply to this rule's targets, not the whole desktop.")
                                         }
-                                        CheckBox { id: animationBox; text: qsTr("Disable window animations"); onToggled: win.refreshPreview() }
-                                        CheckBox { id: dimBox; text: qsTr("Disable dimming"); onToggled: win.refreshPreview() }
-                                        CheckBox { id: vrrBox; text: qsTr("Disable variable refresh rate for this window"); onToggled: win.refreshPreview() }
-                                        CheckBox { id: persistentSizeBox; text: qsTr("Remember floating size for matching windows"); onToggled: win.refreshPreview() }
+                                         CheckBox { id: animationBox; objectName: "animationBox"; text: qsTr("Disable window animations"); onToggled: win.refreshPreview() }
+                                         CheckBox { id: dimBox; objectName: "dimBox"; text: qsTr("Disable dimming"); onToggled: win.refreshPreview() }
+                                         CheckBox { id: vrrBox; objectName: "vrrBox"; text: qsTr("Disable variable refresh rate for this window"); onToggled: win.refreshPreview() }
+                                         CheckBox { id: persistentSizeBox; objectName: "persistentSizeBox"; text: qsTr("Remember floating size for matching windows"); onToggled: win.refreshPreview() }
                                     }
                                 }
                             }
@@ -1700,9 +1842,19 @@ ApplicationWindow {
                                             explanation: qsTr("Manage rules stored in your Hyprland configuration. Enable or disable, apply to matching open windows, duplicate, edit, reorder, or remove a rule using its row actions. Overlap warns that rules may target the same windows. Import and export transfer the complete collection as JSON; review imports before confirming.")
                                         }
                                          Label {
+                                              Layout.fillWidth: true
+                                              text: qsTr("Manage persistent Hyprland window rules. Import and export the complete rule collection as JSON.")
+                                              wrapMode: Text.WordWrap; font.pixelSize: 11; opacity: 0.6
+                                          }
+                                         Label {
+                                             objectName: "selectedWindowRuleHint"
                                              Layout.fillWidth: true
-                                             text: qsTr("Manage persistent Hyprland window rules. Import and export the complete rule collection as JSON.")
-                                             wrapMode: Text.WordWrap; font.pixelSize: 11; opacity: 0.6
+                                             visible: backend.selectedIndex >= 0
+                                             text: win.selectedWindowRuleNames.length > 0
+                                                 ? qsTr("Rules matching this window: %1").arg(win.selectedWindowRuleNames.join(", "))
+                                                 : qsTr("No saved WindowTuner rule matches this window.")
+                                             color: win.mutedForeground
+                                             wrapMode: Text.WordWrap
                                          }
                                          RowLayout {
                                              Layout.fillWidth: true
@@ -1807,6 +1959,324 @@ ApplicationWindow {
                 }
 
                 Rectangle {
+                    id: livePreviewCard
+                    objectName: "livePreviewCard"
+                    visible: backend.selectedIndex >= 0 && (win.width >= 1060 || win.previewFocus)
+                    Layout.preferredWidth: 286
+                    Layout.minimumWidth: 250
+                    Layout.fillWidth: win.previewFocus && win.width < 1060
+                    Layout.fillHeight: true
+                    radius: 8
+                    color: win.surface
+                    border.color: win.outline
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: win.previewFocus && win.width < 1060 ? 8 : 11
+                        spacing: win.previewFocus && win.width < 1060 ? 3 : 5
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Label { text: qsTr("Window preview"); font.pixelSize: 14; font.bold: true }
+                            Item { Layout.fillWidth: true }
+                            ToolButton {
+                                text: "i"
+                                Accessible.name: qsTr("About this preview")
+                                ToolTip.visible: hovered
+                                ToolTip.text: qsTr("This is a diagram, not a compositor screenshot. Current geometry comes from Hyprland; effective opacity and decoration are not reported.")
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 4
+                            Repeater {
+                                model: [
+                                    {key: "current", label: qsTr("Current")},
+                                    {key: "draft", label: qsTr("Draft")},
+                                    {key: "compare", label: qsTr("Compare")}
+                                ]
+                                delegate: Button {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    objectName: "previewMode_" + modelData.key
+                                    text: modelData.label
+                                    checkable: true
+                                    checked: win.previewMode === modelData.key
+                                    Accessible.name: modelData.label + qsTr(" window preview")
+                                    onClicked: win.previewMode = modelData.key
+                                    background: Rectangle {
+                                        radius: 4
+                                        color: parent.checked ? Qt.alpha(theme.accent, 0.14) : "transparent"
+                                        border.color: parent.checked ? Qt.alpha(theme.accent, 0.52) : win.outline
+                                    }
+                                    contentItem: Label {
+                                        text: parent.text
+                                        color: parent.checked ? theme.accent : win.mutedForeground
+                                        font.pixelSize: 10
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                }
+                            }
+                        }
+                        Item {
+                            id: previewCanvas
+                            objectName: "previewCanvas"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: win.previewFocus && win.width < 1060 ? 86 : 132
+                            clip: true
+                            Rectangle {
+                                anchors.fill: parent
+                                color: "transparent"
+                            }
+                            Item {
+                                id: previewMonitor
+                                objectName: "previewMonitor"
+                                width: (win.previewMonitorInfo.width || 1920) * win.previewScaleFactor
+                                height: (win.previewMonitorInfo.height || 1080) * win.previewScaleFactor
+                                anchors.centerIn: parent
+                                clip: true
+                                Rectangle {
+                                    anchors.fill: parent
+                                    color: "#0b1014"
+                                    border.color: win.outline
+                                    radius: 4
+                                }
+                                Label {
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.leftMargin: 5
+                                    anchors.topMargin: 3
+                                    text: qsTr("%1 · %2 × %3").arg(win.previewMonitorInfo.name || qsTr("Monitor"))
+                                        .arg(win.previewMonitorInfo.width || 1920).arg(win.previewMonitorInfo.height || 1080)
+                                    color: win.mutedForeground
+                                    font.pixelSize: 7
+                                }
+                                Rectangle {
+                                    id: previewCurrentShape
+                                    objectName: "previewCurrentShape"
+                                    property var geometry: win.previewWindowGeometry(false)
+                                    x: geometry.x * win.previewScaleFactor
+                                    y: geometry.y * win.previewScaleFactor
+                                    width: Math.max(22, geometry.width * win.previewScaleFactor)
+                                    height: Math.max(18, geometry.height * win.previewScaleFactor)
+                                    visible: win.previewMode !== "draft"
+                                    color: Qt.alpha(win.mutedForeground, win.previewMode === "compare" ? 0.10 : 0.16)
+                                    border.color: win.mutedForeground
+                                    border.width: 1
+                                    radius: 3
+                                    Label {
+                                        anchors.centerIn: parent
+                                        width: parent.width - 6
+                                        visible: win.previewMode === "current"
+                                        text: (backend.selectedWindow.currentTitle || backend.selectedWindow.title || qsTr("Selected window"))
+                                        color: "#e6e9eb"
+                                        font.pixelSize: 8
+                                        horizontalAlignment: Text.AlignHCenter
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                                Rectangle {
+                                    id: previewWindowShape
+                                    objectName: "previewWindowShape"
+                                    property var geometry: win.previewWindowGeometry(true)
+                                    x: geometry.x * win.previewScaleFactor
+                                    y: geometry.y * win.previewScaleFactor
+                                    width: Math.max(22, geometry.width * win.previewScaleFactor)
+                                    height: Math.max(18, geometry.height * win.previewScaleFactor)
+                                    visible: win.previewMode !== "current"
+                                    opacity: win.draftSettings.opacityEnabled
+                                        ? Number(win.draftSettings.opacityActive || 1) : 1
+                                    color: Qt.alpha(theme.accent, win.previewMode === "compare" ? 0.16 : 0.24)
+                                    border.width: win.draftSettings.borderEnabled
+                                        ? Math.max(1, Number(win.draftSettings.borderSize || 1) * win.previewScaleFactor) : 1
+                                    border.color: theme.accent
+                                    radius: win.draftSettings.roundingEnabled
+                                        ? Math.min(10, Number(win.draftSettings.rounding || 0) * win.previewScaleFactor) : 3
+                                    Label {
+                                        anchors.centerIn: parent
+                                        width: parent.width - 6
+                                        visible: win.previewMode === "draft"
+                                        text: (backend.selectedWindow.currentTitle || backend.selectedWindow.title || qsTr("Draft window"))
+                                        color: "#e6e9eb"
+                                        font.pixelSize: 8
+                                        horizontalAlignment: Text.AlignHCenter
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                            }
+                        }
+                        RowLayout {
+                            objectName: "previewCompareLegend"
+                            Layout.fillWidth: true
+                            visible: win.previewMode === "compare"
+                            spacing: 10
+                            RowLayout {
+                                spacing: 4
+                                Rectangle { width: 8; height: 8; radius: 2; color: win.mutedForeground }
+                                Label { text: qsTr("Current"); color: win.mutedForeground; font.pixelSize: 8 }
+                            }
+                            RowLayout {
+                                spacing: 4
+                                Rectangle { width: 8; height: 8; radius: 2; color: theme.accent }
+                                Label { text: qsTr("Draft"); color: win.mutedForeground; font.pixelSize: 8 }
+                            }
+                        }
+                        Label {
+                            objectName: "previewGeometrySummary"
+                            Layout.fillWidth: true
+                            text: {
+                                const current = win.previewWindowGeometry(false)
+                                const proposed = win.previewWindowGeometry(true)
+                                if (win.previewMode === "current")
+                                    return qsTr("Current · %1 · %2 × %3 at %4, %5").arg(backend.selectedWindow.floating ? qsTr("Floating") : qsTr("Tiled")).arg(current.width).arg(current.height).arg(Math.round(current.x)).arg(Math.round(current.y))
+                                if (win.previewMode === "compare")
+                                    return qsTr("Current %1 × %2 → Draft %3 × %4").arg(current.width).arg(current.height).arg(proposed.width).arg(proposed.height)
+                                return qsTr("Draft · %1 · %2 × %3 at %4, %5").arg(win.draftSettings.layout || "floating").arg(proposed.width).arg(proposed.height).arg(Math.round(proposed.x)).arg(Math.round(proposed.y))
+                            }
+                            font.pixelSize: 10
+                            font.weight: Font.Medium
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            objectName: "previewChangeSummary"
+                            Layout.fillWidth: true
+                            visible: !(win.previewFocus && win.width < 1060)
+                            text: qsTr("Changes: %1").arg(win.previewChangeSummary())
+                            color: win.mutedForeground
+                            font.pixelSize: 9
+                            maximumLineCount: 1
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            objectName: "previewOpacitySummary"
+                            Layout.fillWidth: true
+                            text: win.previewMode === "current"
+                                ? qsTr("Effective opacity & decoration: unavailable")
+                                : (win.draftSettings.opacityEnabled
+                                   ? qsTr("Draft opacity %1 / %2 · current effective value unavailable").arg(Number(win.draftSettings.opacityActive).toFixed(2)).arg(Number(win.draftSettings.opacityInactive).toFixed(2))
+                                   : qsTr("Draft opacity: no override"))
+                            color: win.mutedForeground
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 8
+                        }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: win.outline }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Label { text: qsTr("Rule impact"); font.pixelSize: 12; font.bold: true }
+                            Item { Layout.fillWidth: true }
+                            ToolButton {
+                                text: "i"
+                                Accessible.name: qsTr("About rule impact")
+                                ToolTip.visible: hovered
+                                ToolTip.text: win.draftImpact.coverage || qsTr("Evaluated against currently open windows only.")
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 3
+                            Repeater {
+                                model: [
+                                    {key: "matches", label: qsTr("Matches"), count: win.draftImpactCounts.matches.length},
+                                    {key: "uncertain", label: qsTr("Uncertain"), count: win.draftImpactCounts.uncertain.length},
+                                    {key: "unaffected", label: qsTr("Unaffected"), count: win.draftImpactCounts.unaffected.length}
+                                ]
+                                delegate: Button {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    objectName: "impactFilter_" + modelData.key
+                                    text: modelData.label + " " + modelData.count
+                                    checkable: true
+                                    checked: win.impactFilter === modelData.key
+                                    Accessible.name: qsTr("%1 open windows").arg(modelData.label) + ", " + modelData.count
+                                    onClicked: win.impactFilter = modelData.key
+                                    background: Rectangle {
+                                        radius: 4
+                                        color: parent.checked ? Qt.alpha(theme.accent, 0.14) : "transparent"
+                                        border.color: parent.checked ? Qt.alpha(theme.accent, 0.52) : "transparent"
+                                    }
+                                    contentItem: Label {
+                                        text: parent.text
+                                        color: parent.checked ? theme.accent : win.mutedForeground
+                                        font.pixelSize: 9
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                            }
+                        }
+                        ScrollView {
+                            objectName: "impactWindowList"
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+                            ListView {
+                                id: impactList
+                                objectName: "impactList"
+                                anchors.fill: parent
+                                clip: true
+                                spacing: 1
+                                model: win.visibleImpactWindows
+                                delegate: ColumnLayout {
+                                    required property var modelData
+                                    required property int index
+                                    width: impactList.width
+                                    objectName: "impactRow_" + modelData.category + "_" + index
+                                    spacing: 2
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        height: 1
+                                        color: win.outline
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        Label {
+                                            text: modelData.category === "matches" ? "✓"
+                                                  : modelData.category === "uncertain" ? "?" : "—"
+                                            color: modelData.category === "matches" ? "#82d69b"
+                                                   : modelData.category === "uncertain" ? "#ffb778" : win.mutedForeground
+                                            font.pixelSize: 10
+                                        }
+                                        Label {
+                                            objectName: "impactWindowName"
+                                            Layout.fillWidth: true
+                                            text: modelData.window.currentTitle || modelData.window.title || modelData.window["class"]
+                                            color: "#e6e9eb"
+                                            font.pixelSize: 10
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+                                    Label {
+                                        objectName: "impactWindowReason"
+                                        Layout.fillWidth: true
+                                        text: modelData.reason
+                                        color: win.mutedForeground
+                                        font.pixelSize: 9
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                                Label {
+                                    anchors.centerIn: parent
+                                    width: parent.width - 12
+                                    visible: impactList.count === 0
+                                    text: win.impactFilter === "matches"
+                                        ? qsTr("No open windows match this draft.")
+                                        : win.impactFilter === "uncertain"
+                                          ? qsTr("No windows have uncertain match conditions.")
+                                          : qsTr("Every open window is affected by this draft.")
+                                    color: win.mutedForeground
+                                    font.pixelSize: 10
+                                    wrapMode: Text.WordWrap
+                                    horizontalAlignment: Text.AlignHCenter
+                                }
+                            }
+                        }
+                    }
+                }
+                }
+
+                Rectangle {
                     objectName: "rulePreviewPanel"
                     Layout.fillWidth: true
                     visible: win.previewExpanded
@@ -1827,6 +2297,7 @@ ApplicationWindow {
                         }
                         TextArea {
                             id: preview
+                            objectName: "rulePreviewText"
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             visible: win.previewExpanded
@@ -1835,7 +2306,10 @@ ApplicationWindow {
                             wrapMode: TextEdit.WrapAnywhere
                             font.family: "monospace"
                             font.pixelSize: 10
-                            text: backend.previewRule(win.options())
+                            text: {
+                                win.previewRevision
+                                return backend.previewRule(win.options())
+                            }
                             background: Rectangle { color: win.raisedSurface; radius: 6 }
                         }
                         Label {
@@ -1894,9 +2368,10 @@ ApplicationWindow {
                             onClicked: win.requestSave()
                         }
                         Button {
+                            objectName: "cancelEditAction"
                             text: qsTr("Cancel edit")
-                            visible: win.editingRuleIndex >= 0
-                            onClicked: { win.editingRuleIndex = -1; win.editingRuleId = ""; win.refreshPreview() }
+                            visible: win.editingRuleIndex >= 0 || win.dirty
+                            onClicked: win.cancelEdit()
                         }
                     }
                 }

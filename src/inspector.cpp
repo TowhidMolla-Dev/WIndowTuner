@@ -84,6 +84,21 @@ QVariantMap Backend::testMatch(const QVariantMap &settings) const
         {"coverage", tr("Local approximation using current client data. Regex uses Qt/PCRE, which can differ from Hyprland. Unknown conditions are never treated as matches.")}};
 }
 
+QVariantMap Backend::simulateRule(const QVariantMap &settings) const
+{
+    QVariantList matches, unaffected, uncertain;
+    for (const auto &entry : m_windows) {
+        const auto window = entry.toMap();
+        auto verdict = matchWindow(window, settings);
+        verdict.insert("window", window);
+        if (verdict.value("matched").toBool()) matches.append(verdict);
+        else if (verdict.value("unknown").toBool()) uncertain.append(verdict);
+        else unaffected.append(verdict);
+    }
+    return {{"matches", matches}, {"unaffected", unaffected}, {"uncertain", uncertain},
+        {"coverage", tr("Local approximation using current client data. Each row explains its verdict. Regex uses Qt/PCRE, which can differ from Hyprland; unknown conditions are not treated as matches.")}};
+}
+
 QVariantMap Backend::inspectWindow() const
 {
     const auto window = selectedWindow();
