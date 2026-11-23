@@ -4,6 +4,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QTimer>
+#include <QLocalSocket>
 #include <QJsonArray>
 #include <QJsonObject>
 
@@ -28,6 +29,9 @@ class Backend : public QObject {
     Q_PROPERTY(QVariantList applicationCatalog READ applicationCatalog NOTIFY catalogChanged)
     Q_PROPERTY(QVariantList workspacePlan READ workspacePlan NOTIFY workspacePlanChanged)
     Q_PROPERTY(QVariantList monitorPlan READ monitorPlan NOTIFY workspacePlanChanged)
+    Q_PROPERTY(QVariantList scenes READ scenes NOTIFY libraryChanged)
+    Q_PROPERTY(QVariantList sessionSnapshots READ sessionSnapshots NOTIFY libraryChanged)
+    Q_PROPERTY(bool sessionSnapshotsEnabled READ sessionSnapshotsEnabled NOTIFY libraryChanged)
     Q_PROPERTY(bool monitorRevertPending READ monitorRevertPending NOTIFY monitorRevertChanged)
     Q_PROPERTY(QString appSpacePath READ appSpacePath CONSTANT)
 
@@ -130,6 +134,16 @@ public:
     QString appSpacePath() const;
     Q_INVOKABLE QVariantMap appSpaceImportPreview(const QString &path = QString()) const;
     Q_INVOKABLE bool importAppSpace(const QString &path = QString());
+    QVariantList scenes() const;
+    Q_INVOKABLE bool captureScene(const QString &name);
+    Q_INVOKABLE QVariantMap previewScene(const QString &id) const;
+    Q_INVOKABLE bool openScene(const QString &id);
+    Q_INVOKABLE bool removeScene(const QString &id);
+    QVariantList sessionSnapshots() const;
+    bool sessionSnapshotsEnabled() const;
+    Q_INVOKABLE bool setSessionSnapshotsEnabled(bool enabled);
+    Q_INVOKABLE QVariantMap previewSessionSnapshot(const QString &id) const;
+    Q_INVOKABLE bool restoreSessionSnapshot(const QString &id);
     static QString deriveApplicationClass(const QString &desktopId, const QString &startupWMClass,
                                           const QString &exec, const QString &browser);
     static QString desktopExecCommand(const QString &exec);
@@ -148,6 +162,15 @@ signals:
     void monitorRevertChanged();
 
 private:
+    void connectHyprlandEvents();
+    void saveSessionSnapshot();
+    QVariantMap resolveSessionSnapshot(const QJsonObject &snapshot) const;
+    bool applyResolvedScene(const QJsonObject &scene, const QVariantMap &resolved);
+
+private slots:
+    void handleHyprlandEvent();
+
+private:
     void setStatus(const QString &status);
     bool writeRules(const QJsonArray &rules);
     bool writeRuleData(const QJsonArray &rules);
@@ -163,6 +186,7 @@ private:
     void loadJournal();
     void loadLibrary();
     bool writeLibrary(const QJsonObject &library);
+    QVariantMap resolveScene(const QJsonObject &scene) const;
     bool decodeRules(const QString &json, QJsonArray *rules, QString *error) const;
     QJsonObject workspaceData() const;
     QJsonObject monitorData() const;
@@ -182,6 +206,9 @@ private:
     int m_selectedIndex = -1;
     QString m_status;
     QTimer m_refreshTimer;
+    QTimer m_sessionSnapshotTimer;
+    QLocalSocket m_eventSocket;
+    QByteArray m_eventBuffer;
     bool m_hasRefreshed = false;
     QByteArray m_diskFingerprint;
     QJsonArray m_past, m_future, m_backups;

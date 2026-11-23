@@ -92,7 +92,58 @@ WindowTuner can also help with the rest of the workflow:
 - **Start from an app:** create an offline target from desktop-entry hints when
   the app is not open.
 
+## Feature tour
+
+### Shape and position windows
+
+Set floating or tiled layout, size, position, centering, and placement anchors.
+The visual designer previews geometry against a selected display and supports
+percentage sizing and aspect-ratio locking.
+
+<p align="center">
+  <img src="docs/screenshots/windowtuner-control.png" alt="WindowTuner editor showing layout controls for a selected window" width="49%">
+  <img src="docs/screenshots/windowtuner-designer.png" alt="Visual placement designer with a resizable window preview on a monitor" width="49%">
+</p>
+
+### Inspect and organize rules
+
+Check whether a draft matches open windows, inspect the selected window's live
+properties, organize rules into collections, and import or export selected
+rules.
+
+<p align="center">
+  <img src="docs/screenshots/windowtuner-inspector.png" alt="Rule inspector comparing a draft against a live window" width="49%">
+  <img src="docs/screenshots/windowtuner-management.png" alt="Rule and application management with batch actions" width="49%">
+</p>
+
+### Map desktops and restore scenes
+
+The Desktops overview shows connected displays, active workspaces, open apps,
+and placement rules without moving anything. Saved scenes capture app classes
+and relative window geometry. Optional session snapshots are off by default;
+when enabled, they are debounced, retained locally, and restored only after
+preview and confirmation. Neither workflow launches missing apps.
+
+<p align="center">
+  <img src="docs/screenshots/windowtuner-desktops.png" alt="Desktops overview showing a monitor, active workspace, and open window" width="49%">
+  <img src="docs/screenshots/windowtuner-scenes.png" alt="Saved scenes dialog with a scene preview and the opt-in session snapshot control" width="49%">
+</p>
+
 ### Apps, workspaces, and displays
+
+The **Desktops** page in the main window shows connected monitors and workspaces,
+including open windows, active workspaces, and saved placement rules. The
+overview is read-only. **Saved scenes** can capture the active desktop, preview
+which saved app classes are currently open, and—after confirmation—restore the
+matching windows' workspace and layout. Missing apps are reported, not
+launched. Scene files store app classes and relative geometry, not window
+titles or addresses; the saved monitor must still be connected.
+
+In **Saved scenes**, session snapshots are optional and disabled by default.
+When enabled, WindowTuner listens to Hyprland window/workspace/monitor events
+and saves debounced snapshots locally (up to 10). You can preview and manually
+restore a snapshot across displays and workspaces. Automatic restore at login
+is not provided; restore never launches missing applications.
 
 The **Apps, workspaces, displays** tool brings app placement into one place:
 
@@ -113,15 +164,27 @@ not include AppSpace's bar widget/workspace strip or its drag-and-drop display
 canvas. App classes derived from desktop entries are hints; a running window's
 reported class is authoritative.
 
-<p align="center">
-  <img src="docs/screenshots/windowtuner-appspace.png" alt="App placement with workspace and login options" width="840">
-</p>
-
 Open **Tools and workflows** for safety, placement, inspection, presets,
 application management, compatibility checks, and the guided walkthrough.
 
+### Safety, compatibility, and reusable workflows
+
+Review changes before saving, validate generated configuration with the
+installed Hyprland parser, undo or redo configuration edits, and try geometry
+with a timed revert. Health diagnostics and capability audits help explain
+what the current compositor supports. Presets and profiles are applied
+manually; they do not launch apps or change the desktop automatically.
+
 <p align="center">
-  <img src="docs/screenshots/windowtuner-tools.png" alt="Grouped Tools and workflows launcher" width="700">
+  <img src="docs/screenshots/windowtuner-safety.png" alt="Safety and history dialog with undo, redo, timed geometry trial, and snapshots" width="49%">
+  <img src="docs/screenshots/windowtuner-health.png" alt="Compatibility and health dialog with session status and configuration checks" width="49%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/windowtuner-workflows.png" alt="Presets and profiles dialog for reusable settings and rule collections" width="49%">
+  <img src="docs/screenshots/windowtuner-tools.png" alt="Tools and workflows launcher grouping the app's utilities" width="49%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/windowtuner-appspace.png" alt="App placement controls for workspace assignment and launch behavior" width="72%">
 </p>
 
 ---

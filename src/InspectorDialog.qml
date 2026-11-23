@@ -9,6 +9,8 @@ StudioDialog {
     font.pixelSize: Math.round(13 * host.textScale)
     property var report: ({})
     property var matchReport: ({})
+    property bool showWindowProperties: false
+    property bool showEvaluationDetails: false
     objectName: "inspectorDialog"
     anchors.centerIn: parent
     width: Math.min(host.width - 60, 760)
@@ -21,7 +23,9 @@ StudioDialog {
     contentItem: ScrollView {
         id: scroller
         objectName: "toolScroll"
+        rightPadding: 18
         contentWidth: availableWidth
+        ScrollBar.vertical.policy: contentHeight > availableHeight ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
         clip: true
         ColumnLayout {
             width: scroller.availableWidth; spacing: 12
@@ -31,19 +35,64 @@ StudioDialog {
                 model: dialog.matchReport.matches || []
                 delegate: Label { required property var modelData; Layout.fillWidth: true; text: modelData.window["class"] + " · " + modelData.window.currentTitle; elide: Text.ElideRight }
             }
-            Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: dialog.matchReport.coverage || "" }
-            Label { text: qsTr("Current properties"); font.bold: true }
-            TextArea { Layout.fillWidth: true; readOnly: true; selectByMouse: true; wrapMode: TextEdit.WrapAnywhere; text: JSON.stringify(dialog.report.window || {}, null, 2); font.pixelSize: 11 }
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("Local match estimate; effective compositor precedence is not guaranteed.")
+            }
             Label { text: qsTr("Matching enabled rules"); font.bold: true }
             Repeater {
                 model: dialog.report.rules || []
                 delegate: Label { required property var modelData; Layout.fillWidth: true; wrapMode: Text.WordWrap; text: modelData.name + (modelData.unknown ? qsTr(" · uncertain") : "") + "\n" + modelData.summary }
             }
             Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#ffb778"; text: (dialog.report.conflicts || []).join("\n") }
-            Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: dialog.report.coverage || "" }
-            Repeater {
-                model: dialog.report.externalHints || []
-                delegate: Label { required property var modelData; Layout.fillWidth: true; text: qsTr("Main config line %1: %2").arg(modelData.line).arg(modelData.kind); wrapMode: Text.WordWrap }
+            Button {
+                objectName: "toggleEvaluationDetailsAction"
+                checkable: true
+                checked: dialog.showEvaluationDetails
+                text: dialog.showEvaluationDetails
+                    ? qsTr("Hide evaluation limits and config hints")
+                    : qsTr("Show evaluation limits and config hints")
+                onClicked: dialog.showEvaluationDetails = checked
+            }
+            ColumnLayout {
+                objectName: "evaluationDetails"
+                visible: dialog.showEvaluationDetails
+                Layout.fillWidth: true
+                spacing: 8
+                Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: dialog.matchReport.coverage || "" }
+                Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: dialog.report.coverage || "" }
+                Repeater {
+                    model: dialog.report.externalHints || []
+                    delegate: Label { required property var modelData; Layout.fillWidth: true; text: qsTr("Main config line %1: %2").arg(modelData.line).arg(modelData.kind); wrapMode: Text.WordWrap }
+                }
+            }
+            Button {
+                objectName: "toggleWindowPropertiesAction"
+                checkable: true
+                checked: dialog.showWindowProperties
+                text: dialog.showWindowProperties
+                    ? qsTr("Hide window properties (JSON)")
+                    : qsTr("Show window properties (JSON)")
+                onClicked: dialog.showWindowProperties = checked
+            }
+            ScrollView {
+                id: propertiesScroll
+                objectName: "windowPropertiesDetails"
+                visible: dialog.showWindowProperties
+                Layout.fillWidth: true
+                Layout.preferredHeight: 180
+                contentWidth: availableWidth
+                clip: true
+                ScrollBar.vertical.policy: ScrollBar.AlwaysOn
+                TextArea {
+                    Accessible.name: qsTr("Current window properties as JSON")
+                    readOnly: true
+                    selectByMouse: true
+                    wrapMode: TextEdit.WrapAnywhere
+                    text: JSON.stringify(dialog.report.window || {}, null, 2)
+                    font.pixelSize: 11
+                }
             }
         }
     }

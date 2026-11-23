@@ -22,7 +22,9 @@ StudioDialog {
     contentItem: ScrollView {
         id: scroller
         objectName: "toolScroll"
+        rightPadding: 18
         contentWidth: availableWidth
+        ScrollBar.vertical.policy: contentHeight > availableHeight ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
         clip: true
         ColumnLayout {
             width: scroller.availableWidth; spacing: 10
@@ -106,9 +108,51 @@ StudioDialog {
                 SpinBox { Accessible.name: qsTr("Designer height"); from: 1; to: dialog.placement.unit === "percent" ? 100 : 10000; value: dialog.placement.height || 60; editable: true; onValueModified: dialog.change("height", value) }
             }
             RowLayout {
+                objectName: "customPositionFields"
+                visible: dialog.placement.anchor === "custom"
+                Layout.fillWidth: true
+                Label { text: qsTr("X") }
+                SpinBox {
+                    objectName: "placementX"
+                    Accessible.name: qsTr("Window X position")
+                    Layout.fillWidth: true
+                    from: dialog.geometry.usableX || 0
+                    to: Math.max(from, (dialog.geometry.usableX || 0)
+                        + (dialog.geometry.usableWidth || dialog.geometry.monitorWidth || 1920)
+                        - (dialog.geometry.width || 600))
+                    value: dialog.placement.x === undefined ? (dialog.geometry.x || 0) : dialog.placement.x
+                    editable: true
+                    onValueModified: dialog.change("x", value)
+                }
+                Label { text: qsTr("Y") }
+                SpinBox {
+                    objectName: "placementY"
+                    Accessible.name: qsTr("Window Y position")
+                    Layout.fillWidth: true
+                    from: dialog.geometry.usableY || 0
+                    to: Math.max(from, (dialog.geometry.usableY || 0)
+                        + (dialog.geometry.usableHeight || dialog.geometry.monitorHeight || 1080)
+                        - (dialog.geometry.height || 420))
+                    value: dialog.placement.y === undefined ? (dialog.geometry.y || 0) : dialog.placement.y
+                    editable: true
+                    onValueModified: dialog.change("y", value)
+                }
+            }
+            RowLayout {
                 Layout.fillWidth: true
                 Label { text: qsTr("Anchor") }
-                ComboBox { Layout.fillWidth: true; model: ["center", "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left", "bottom-right", "custom"]; currentIndex: Math.max(0, model.indexOf(dialog.placement.anchor || "center")); onActivated: dialog.change("anchor", currentText) }
+                ComboBox {
+                    Layout.fillWidth: true
+                    model: ["center", "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left", "bottom-right", "custom"]
+                    currentIndex: Math.max(0, model.indexOf(dialog.placement.anchor || "center"))
+                    onActivated: {
+                        if (currentText === "custom") {
+                            dialog.change("x", dialog.geometry.x || 0)
+                            dialog.change("y", dialog.geometry.y || 0)
+                        }
+                        dialog.change("anchor", currentText)
+                    }
+                }
                 Label { text: qsTr("Margin") }
                 SpinBox { from: 0; to: 1000; value: dialog.placement.margin || 0; onValueModified: dialog.change("margin", value) }
             }

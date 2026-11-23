@@ -10,14 +10,16 @@ StudioDialog {
     objectName: "workflowDialog"
     anchors.centerIn: parent
     width: Math.min(host.width - 60, 760)
-    height: Math.min(host.height - 60, 640)
+    height: Math.min(host.height - 60, Math.max(420, implicitHeight))
     modal: true
     title: qsTr("Presets & profiles")
     standardButtons: Dialog.Close
     contentItem: ScrollView {
         id: scroller
         objectName: "toolScroll"
+        rightPadding: 18
         contentWidth: availableWidth
+        ScrollBar.vertical.policy: contentHeight > availableHeight ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
         clip: true
         ColumnLayout {
             width: scroller.availableWidth; spacing: 12

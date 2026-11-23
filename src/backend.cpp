@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QStandardPaths>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
@@ -128,6 +129,51 @@ Backend::Backend(const QString &configDirectory, const QString &hyprlandConfig,
     m_refreshTimer.setInterval(1800);
     connect(&m_refreshTimer, &QTimer::timeout, this, &Backend::refreshWindows);
     m_refreshTimer.start();
+    m_sessionSnapshotTimer.setSingleShot(true);
+    m_sessionSnapshotTimer.setInterval(1800);
+    connect(&m_sessionSnapshotTimer, &QTimer::timeout, this, &Backend::saveSessionSnapshot);
+    connectHyprlandEvents();
+}
+
+void Backend::connectHyprlandEvents()
+{
+    const QString instance = qEnvironmentVariable("HYPRLAND_INSTANCE_SIGNATURE");
+    const QString runtime = qEnvironmentVariable("XDG_RUNTIME_DIR");
+    if (instance.isEmpty() || runtime.isEmpty()) return;
+    const QString socketPath = runtime + "/hypr/" + instance + "/.socket2.sock";
+    if (!m_eventSocket.property("eventHandlersConnected").toBool()) {
+      m_eventSocket.setProperty("eventHandlersConnected", true);
+      connect(&m_eventSocket, &QLocalSocket::readyRead, this, [this] {
+        m_eventBuffer += m_eventSocket.readAll();
+        while (true) {
+            const qsizetype newline = m_eventBuffer.indexOf('\n');
+            if (newline < 0) break;
+            const QByteArray event = m_eventBuffer.left(newline).trimmed();
+            m_eventBuffer.remove(0, newline + 1);
+            const QByteArray name = event.left(event.indexOf(">>"));
+            if (name == "openwindow" || name == "closewindow" || name == "movewindow" ||
+                name == "movewindowv2" || name == "changefloatingmode" ||
+                name == "fullscreen" || name == "monitoradded" || name == "monitorremoved" ||
+                name == "workspace" || name == "workspacev2" || name == "focusedmon")
+                handleHyprlandEvent();
+        }
+        if (m_eventBuffer.size() > 65536) m_eventBuffer.clear();
+      });
+      connect(&m_eventSocket, &QLocalSocket::disconnected, this, [this] {
+        m_eventBuffer.clear();
+        QTimer::singleShot(2500, this, [this] {
+            if (m_eventSocket.state() == QLocalSocket::UnconnectedState)
+                connectHyprlandEvents();
+        });
+      });
+    }
+    m_eventSocket.connectToServer(socketPath, QIODevice::ReadOnly);
+}
+
+void Backend::handleHyprlandEvent()
+{
+    refreshWindows();
+    if (sessionSnapshotsEnabled()) m_sessionSnapshotTimer.start();
 }
 
 QVariantList Backend::parseClients(const QByteArray &json, QString *error)

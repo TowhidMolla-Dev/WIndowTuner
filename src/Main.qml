@@ -11,13 +11,13 @@ ApplicationWindow {
     minimumHeight: Math.round(680 * textScale)
     visible: true
     title: qsTr("WindowTuner")
-    color: "#090f13"
+    color: "#0b1014"
 
     // Omarchy Control-inspired shell; accents still follow the user's theme.
-    readonly property color surface: "#0f171d"
-    readonly property color raisedSurface: "#15212a"
-    readonly property color outline: "#24313b"
-    readonly property color mutedForeground: "#93a4b3"
+    readonly property color surface: "#11181d"
+    readonly property color raisedSurface: "#182127"
+    readonly property color outline: "#29343a"
+    readonly property color mutedForeground: "#9aa6ad"
     readonly property var sections: [
         { title: qsTr("Layout"), icon: "▦", subtitle: qsTr("Shape and size this window") },
         { title: qsTr("Placement"), icon: "⌖", subtitle: qsTr("Choose where and how it appears") },
@@ -29,7 +29,7 @@ ApplicationWindow {
     Material.theme: Material.Dark
     Material.accent: theme.accent
     Material.roundedScale: Material.Small
-    font.pixelSize: 13
+    font.pixelSize: 14
     property real textScale: backend.preference("textScale", 1.0)
     property bool advancedMode: backend.preference("advanced", false)
     onAdvancedModeChanged: if (editorReady) backend.setPreference("advanced", advancedMode)
@@ -99,59 +99,46 @@ ApplicationWindow {
 
     component ToolLauncherTile: Button {
         required property string actionId
-        required property string glyph
         required property string title
         required property string detail
         objectName: "toolLauncher_" + actionId
         Layout.fillWidth: true
-        Layout.preferredHeight: 58
+        Layout.preferredHeight: 54
         hoverEnabled: true
         onClicked: win.openTool(actionId)
         background: Rectangle {
-            radius: 9
-            color: parent.hovered ? Qt.alpha(theme.accent, 0.11) : "#121e27"
-            border.color: parent.hovered ? Qt.alpha(theme.accent, 0.48) : "#263642"
+            radius: 4
+            color: parent.hovered ? Qt.alpha(theme.accent, 0.08) : "transparent"
         }
         contentItem: RowLayout {
-            spacing: 10
-            Rectangle {
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                radius: 10
-                color: Qt.alpha(theme.accent, parent.parent.hovered ? 0.2 : 0.12)
-                Label {
-                    anchors.centerIn: parent
-                    text: parent.parent.parent.glyph
-                    color: theme.accent
-                    font.pixelSize: 17
-                }
-            }
+            spacing: 12
             ColumnLayout {
                 Layout.fillWidth: true
-                spacing: 2
+                spacing: 3
                 Label {
                     Layout.fillWidth: true
                     text: parent.parent.parent.title
-                    color: "#e2e9ee"
-                    font.pixelSize: 11
-                    font.bold: true
+                    color: "#e6e9eb"
+                    font.pixelSize: 13
+                    font.weight: Font.Medium
                     elide: Text.ElideRight
                 }
                 Label {
                     Layout.fillWidth: true
                     text: parent.parent.parent.detail
-                    color: "#82939f"
-                    font.pixelSize: 9
+                    color: win.mutedForeground
+                    font.pixelSize: 11
                     elide: Text.ElideRight
                 }
             }
-            Label { text: "›"; color: "#657784"; font.pixelSize: 18 }
+            Label { text: "›"; color: parent.parent.hovered ? theme.accent : win.mutedForeground; font.pixelSize: 18 }
         }
     }
 
     property string layoutMode: "floating"
     property int category: 0
     property bool windowsPage: true
+    property bool desktopsPage: false
     property string windowFilter: ""
     property string ruleFilter: ""
     property int editingRuleIndex: -1
@@ -302,6 +289,7 @@ ApplicationWindow {
     WorkflowDialog { id: workflowDialog; host: win }
     ManagementDialog { id: managementDialog; host: win }
     AppSpaceDialog { id: appSpaceDialog; host: win }
+    ScenesDialog { id: scenesDialog; host: win }
     HealthDialog { id: healthDialog; host: win }
     WelcomeDialog { id: welcomeDialog; host: win }
     StudioDialog {
@@ -406,9 +394,10 @@ ApplicationWindow {
 
     function refreshPreview() { preview.text = backend.previewRule(options()) }
     function navigate(section) {
-        windowsPage = section < 0
+        desktopsPage = section === -2
+        windowsPage = section === -1
         if (section >= 0) category = section
-        headerSearch.text = !windowsPage && category === 4 ? ruleFilter : windowFilter
+        headerSearch.text = !windowsPage && !desktopsPage && category === 4 ? ruleFilter : windowFilter
     }
     function loadRule(index) {
         if (dirty) { pendingRule = index; pendingWindow = -1; discardOnly = false; discardDialog.open(); return }
@@ -592,7 +581,7 @@ ApplicationWindow {
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 56
-            color: "#080e12"
+            color: "#0e1418"
             border.color: win.outline
             border.width: 1
 
@@ -624,15 +613,15 @@ ApplicationWindow {
                     background: Rectangle { radius: 6; color: "#0b141b"; border.color: headerSearch.activeFocus ? theme.accent : win.outline }
                     onTextEdited: {
                         if (win.settingsSearch) { win.settingsFilter = text; settingsResultsPopup.open() }
-                        else if (!win.windowsPage && win.category === 4) win.ruleFilter = text
-                        else { win.windowFilter = text; win.windowsPage = true }
+                        else if (!win.desktopsPage && !win.windowsPage && win.category === 4) win.ruleFilter = text
+                        else { win.windowFilter = text; win.desktopsPage = false; win.windowsPage = true }
                     }
                     Label {
                         anchors.left: parent.left; anchors.leftMargin: 12
                         anchors.right: parent.right; anchors.rightMargin: 68
                         anchors.verticalCenter: parent.verticalCenter
                         visible: headerSearch.text.length === 0
-                        text: win.settingsSearch ? qsTr("Search settings…") : !win.windowsPage && win.category === 4 ? qsTr("Search saved rules…") : qsTr("Search windows by app, title, or workspace…")
+                        text: win.settingsSearch ? qsTr("Search settings…") : !win.desktopsPage && !win.windowsPage && win.category === 4 ? qsTr("Search saved rules…") : qsTr("Search windows by app, title, or workspace…")
                         color: win.mutedForeground; font.pixelSize: 12; elide: Text.ElideRight
                     }
                     Label { anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; text: "Ctrl K"; color: win.mutedForeground; font.pixelSize: 10 }
@@ -652,16 +641,15 @@ ApplicationWindow {
                         }
                     }
                 }
-                ToolButton { objectName: "settingsSearchToggle"; text: "⚙"; checkable: true; checked: win.settingsSearch; Accessible.name: qsTr("Search settings"); ToolTip.visible: hovered; ToolTip.text: qsTr("Toggle settings search"); onClicked: { win.settingsSearch = !win.settingsSearch; headerSearch.text = ""; headerSearch.forceActiveFocus() } }
-                Label {
-                    text: qsTr("%1 WINDOWS").arg(backend.windows.length)
-                    color: win.mutedForeground
-                    font.pixelSize: 9
-                    font.bold: true
-                    leftPadding: 10
-                    rightPadding: 10
-                    background: Rectangle { radius: 7; color: win.raisedSurface; border.color: win.outline }
-                    Layout.rightMargin: 6
+                ToolButton {
+                    objectName: "settingsSearchToggle"
+                    text: win.settingsSearch ? qsTr("Switch to windows") : qsTr("Switch to settings")
+                    checkable: true
+                    checked: win.settingsSearch
+                    Accessible.name: win.settingsSearch ? qsTr("Search windows instead of settings") : qsTr("Search settings instead of windows")
+                    ToolTip.visible: hovered
+                    ToolTip.text: win.settingsSearch ? qsTr("Switch search to windows") : qsTr("Switch search to settings")
+                    onClicked: { win.settingsSearch = !win.settingsSearch; headerSearch.text = ""; headerSearch.forceActiveFocus() }
                 }
                 ToolButton {
                     text: "↻"
@@ -695,11 +683,43 @@ ApplicationWindow {
                         flat: true
                         highlighted: win.windowsPage
                         onClicked: win.navigate(-1)
-                        background: Rectangle { radius: 6; color: win.windowsPage ? Qt.alpha(theme.accent, 0.13) : parent.hovered ? win.raisedSurface : "transparent"; border.color: win.windowsPage ? Qt.alpha(theme.accent, 0.25) : "transparent" }
-                        contentItem: Label { text: parent.text; color: win.windowsPage ? theme.accent : "#c2cdd6"; verticalAlignment: Text.AlignVCenter; leftPadding: 10 }
+                        background: Rectangle { radius: 4; color: win.windowsPage ? Qt.alpha(theme.accent, 0.08) : parent.hovered ? win.raisedSurface : "transparent" }
+                        contentItem: RowLayout {
+                            Rectangle { Layout.preferredWidth: 2; Layout.fillHeight: true; color: win.windowsPage ? theme.accent : "transparent" }
+                            Label { Layout.fillWidth: true; text: parent.parent.text; color: win.windowsPage ? "#f1f3f4" : "#c2cdd6"; verticalAlignment: Text.AlignVCenter; leftPadding: 10 }
+                        }
+                    }
+                    Button {
+                        objectName: "desktopsNavigation"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 42
+                        text: qsTr("▦   Desktops")
+                        flat: true
+                        highlighted: win.desktopsPage
+                        onClicked: win.navigate(-2)
+                        background: Rectangle {
+                            radius: 4
+                            color: win.desktopsPage ? Qt.alpha(theme.accent, 0.08)
+                                : parent.hovered ? win.raisedSurface : "transparent"
+                        }
+                        contentItem: RowLayout {
+                            Rectangle {
+                                Layout.preferredWidth: 2
+                                Layout.fillHeight: true
+                                color: win.desktopsPage ? theme.accent : "transparent"
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: parent.parent.text
+                                color: win.desktopsPage ? "#f1f3f4" : "#c2cdd6"
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: 10
+                            }
+                        }
+                        Accessible.name: qsTr("Desktop overview")
                     }
                     Rectangle { Layout.fillWidth: true; Layout.topMargin: 6; Layout.bottomMargin: 6; height: 1; color: win.outline }
-                    Label { text: qsTr("WINDOW SETTINGS"); font.pixelSize: 9; font.letterSpacing: 1; color: win.mutedForeground; leftPadding: 10; Layout.bottomMargin: 5 }
+                    Label { text: qsTr("Rule editor"); font.pixelSize: 11; font.weight: Font.Medium; color: win.mutedForeground; leftPadding: 10; Layout.bottomMargin: 5 }
                     Repeater {
                         model: win.sections
                         delegate: Button {
@@ -707,20 +727,20 @@ ApplicationWindow {
                             required property var modelData
                             required property int index
                             objectName: "sectionNavigation" + index
-                            readonly property bool selected: !win.windowsPage && win.category === index
+                            readonly property bool selected: !win.windowsPage && !win.desktopsPage && win.category === index
                             Layout.fillWidth: true
                             Layout.preferredHeight: 40
                             flat: true
                             onClicked: win.navigate(index)
                             background: Rectangle {
-                                radius: 6
-                                color: navButton.selected ? Qt.alpha(theme.accent, 0.13) : navButton.hovered ? win.raisedSurface : "transparent"
-                                border.color: navButton.selected ? Qt.alpha(theme.accent, 0.25) : "transparent"
+                                radius: 4
+                                color: navButton.selected ? Qt.alpha(theme.accent, 0.08) : navButton.hovered ? win.raisedSurface : "transparent"
                             }
                             contentItem: RowLayout {
                                 spacing: 10
+                                Rectangle { Layout.preferredWidth: 2; Layout.fillHeight: true; color: navButton.selected ? theme.accent : "transparent" }
                                 Label { text: modelData.icon; color: navButton.selected ? theme.accent : win.mutedForeground; Layout.preferredWidth: 22; horizontalAlignment: Text.AlignHCenter }
-                                Label { text: modelData.title; color: navButton.selected ? theme.accent : "#c2cdd6"; Layout.fillWidth: true; elide: Text.ElideRight }
+                                Label { text: modelData.title; color: navButton.selected ? "#f1f3f4" : "#c2cdd6"; Layout.fillWidth: true; elide: Text.ElideRight }
                             }
                             Accessible.name: modelData.title
                         }
@@ -736,15 +756,15 @@ ApplicationWindow {
                         flat: true
                         onClicked: toolsMenu.open()
                         background: Rectangle {
-                            radius: 9
-                            color: toolsMenu.opened ? Qt.alpha(theme.accent, 0.13)
+                            radius: 4
+                            color: toolsMenu.opened ? Qt.alpha(theme.accent, 0.08)
                                 : toolsNavigation.hovered ? win.raisedSurface : "transparent"
-                            border.color: toolsMenu.opened ? Qt.alpha(theme.accent, 0.38) : "transparent"
+                            border.color: "transparent"
                         }
                         contentItem: RowLayout {
                             spacing: 10
                             Label {
-                                text: "✦"
+                                text: "⌘"
                                 color: toolsMenu.opened ? theme.accent : win.mutedForeground
                                 font.pixelSize: 17
                                 Layout.preferredWidth: 22
@@ -753,7 +773,7 @@ ApplicationWindow {
                             Label {
                                 Layout.fillWidth: true
                                 text: toolsNavigation.text
-                                color: toolsMenu.opened ? theme.accent : "#c2cdd6"
+                                color: toolsMenu.opened ? "#f1f3f4" : "#c2cdd6"
                             }
                             Label { text: toolsMenu.opened ? "⌃" : "›"; color: win.mutedForeground; font.pixelSize: 16 }
                         }
@@ -776,9 +796,9 @@ ApplicationWindow {
                             focus: true
                             closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
                             background: Rectangle {
-                                radius: 14
-                                color: "#0f171d"
-                                border.color: "#344652"
+                                radius: 7
+                                color: "#11181d"
+                                border.color: win.outline
                             }
                             contentItem: ColumnLayout {
                                 id: toolsLauncherContent
@@ -789,8 +809,8 @@ ApplicationWindow {
                                     ColumnLayout {
                                         Layout.fillWidth: true
                                         spacing: 2
-                                        Label { text: qsTr("Tools and workflows"); font.pixelSize: 17; font.bold: true }
-                                        Label { text: qsTr("Shortcuts for managing your window setup"); color: win.mutedForeground; font.pixelSize: 10 }
+                                        Label { text: qsTr("Tools and workflows"); font.pixelSize: 17; font.weight: Font.Medium }
+                                        Label { text: qsTr("Utilities for rules, placement, and diagnostics"); color: win.mutedForeground; font.pixelSize: 11 }
                                     }
                                     ToolButton {
                                         text: "×"
@@ -800,11 +820,10 @@ ApplicationWindow {
                                 }
                                 Rectangle { Layout.fillWidth: true; height: 1; color: win.outline }
                                 Label {
-                                    text: qsTr("WINDOW RULES")
+                                    text: qsTr("Rule tools")
                                     color: win.mutedForeground
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 1
+                                    font.pixelSize: 11
+                                    font.weight: Font.Medium
                                     Layout.topMargin: 1
                                 }
                                 GridLayout {
@@ -812,17 +831,16 @@ ApplicationWindow {
                                     columns: 2
                                     rowSpacing: 7
                                     columnSpacing: 7
-                                    ToolLauncherTile { actionId: "safety"; glyph: "◈"; title: qsTr("Safety and history"); detail: qsTr("Undo, snapshots, and trial changes") }
-                                    ToolLauncherTile { actionId: "placement"; glyph: "⌖"; title: qsTr("Placement designer"); detail: qsTr("Arrange a window visually") }
-                                    ToolLauncherTile { actionId: "inspect"; glyph: "⌕"; title: qsTr("Inspect match"); detail: qsTr("See which rules match a window") }
-                                    ToolLauncherTile { actionId: "workflows"; glyph: "▤"; title: qsTr("Presets and profiles"); detail: qsTr("Save and switch rule collections") }
+                                    ToolLauncherTile { actionId: "safety"; title: qsTr("Safety and history"); detail: qsTr("Undo, snapshots, and trial changes") }
+                                    ToolLauncherTile { actionId: "placement"; title: qsTr("Placement designer"); detail: qsTr("Arrange a window visually") }
+                                    ToolLauncherTile { actionId: "inspect"; title: qsTr("Inspect match"); detail: qsTr("See which rules match a window") }
+                                    ToolLauncherTile { actionId: "workflows"; title: qsTr("Presets and profiles"); detail: qsTr("Save and switch rule collections") }
                                 }
                                 Label {
-                                    text: qsTr("APPLICATIONS")
+                                    text: qsTr("Applications and placement")
                                     color: win.mutedForeground
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 1
+                                    font.pixelSize: 11
+                                    font.weight: Font.Medium
                                     Layout.topMargin: 1
                                 }
                                 GridLayout {
@@ -830,15 +848,14 @@ ApplicationWindow {
                                     columns: 2
                                     rowSpacing: 7
                                     columnSpacing: 7
-                                    ToolLauncherTile { actionId: "management"; glyph: "◫"; title: qsTr("Applications and imports"); detail: qsTr("Create targets and organize rules") }
-                                    ToolLauncherTile { objectName: "appSpaceMenuEntry"; actionId: "appspace"; glyph: "▦"; title: qsTr("Apps, workspaces, displays"); detail: qsTr("Choose where apps open") }
+                                    ToolLauncherTile { actionId: "management"; title: qsTr("Applications and imports"); detail: qsTr("Create targets and organize rules") }
+                                    ToolLauncherTile { objectName: "appSpaceMenuEntry"; actionId: "appspace"; title: qsTr("Apps, workspaces, displays"); detail: qsTr("Choose where apps open") }
                                 }
                                 Label {
-                                    text: qsTr("HELP AND DIAGNOSTICS")
+                                    text: qsTr("Help and diagnostics")
                                     color: win.mutedForeground
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 1
+                                    font.pixelSize: 11
+                                    font.weight: Font.Medium
                                     Layout.topMargin: 1
                                 }
                                 GridLayout {
@@ -846,9 +863,9 @@ ApplicationWindow {
                                     columns: 2
                                     rowSpacing: 7
                                     columnSpacing: 7
-                                    ToolLauncherTile { actionId: "health"; glyph: "◇"; title: qsTr("Compatibility and health"); detail: qsTr("Check supported Hyprland features") }
-                                    ToolLauncherTile { actionId: "welcome"; glyph: "✦"; title: qsTr("Getting started"); detail: qsTr("Open the guided walkthrough") }
-                                    ToolLauncherTile { actionId: "shortcuts"; glyph: "⌘"; title: qsTr("Keyboard shortcuts"); detail: qsTr("View available key commands") }
+                                    ToolLauncherTile { actionId: "health"; title: qsTr("Compatibility and health"); detail: qsTr("Check supported Hyprland features") }
+                                    ToolLauncherTile { actionId: "welcome"; title: qsTr("Getting started"); detail: qsTr("Open the guided walkthrough") }
+                                    ToolLauncherTile { actionId: "shortcuts"; title: qsTr("Keyboard shortcuts"); detail: qsTr("View available key commands") }
                                 }
                             }
                         }
@@ -862,7 +879,7 @@ ApplicationWindow {
             // A dedicated discovery page keeps the settings pane uncluttered.
             Rectangle {
                 objectName: "windowsPage"
-                visible: win.windowsPage
+                visible: win.windowsPage && !win.desktopsPage
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.margins: 20
@@ -880,6 +897,14 @@ ApplicationWindow {
                         }
                         Item { Layout.fillWidth: true }
                         CheckBox { text: qsTr("Group apps"); checked: win.groupApplications; onToggled: win.groupApplications = checked }
+                        Button {
+                            objectName: "setupOfflineRuleAction"
+                            text: qsTr("Add offline app rule…")
+                            flat: true
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("Create a rule for an app that may not be open")
+                            onClicked: managementDialog.open()
+                        }
                         ToolButton {
                             text: "⌖"
                             font.pixelSize: 19
@@ -888,10 +913,9 @@ ApplicationWindow {
                             onClicked: pickerOverlay.visible = true
                         }
                         Label {
-                            text: qsTr("%1 LIVE").arg(backend.windows.length)
+                            text: qsTr("%1 open").arg(backend.windows.length)
                             color: win.mutedForeground
-                            font.pixelSize: 9
-                            font.bold: true
+                            font.pixelSize: 11
                         }
                     }
 
@@ -901,7 +925,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
-                        spacing: 5
+                        spacing: 0
                         model: win.visibleWindows
                         section.property: win.groupApplications ? "appGroup" : ""
                         section.delegate: Label { required property string section; text: section; color: theme.accent; padding: 8; font.bold: true }
@@ -912,53 +936,57 @@ ApplicationWindow {
                             required property var modelData
                             objectName: "windowEntry" + modelData.sourceIndex
                             width: ListView.view.width
-                            height: 70
+                            height: modelData.sourceIndex === backend.selectedIndex ? 84 : 62
                             highlighted: modelData.sourceIndex === backend.selectedIndex
                             onClicked: win.chooseWindow(modelData.sourceIndex)
                             background: Rectangle {
-                                radius: 9
-                                color: windowItem.highlighted ? Qt.alpha(theme.accent, 0.11) : (windowItem.hovered ? win.raisedSurface : win.surface)
-                                border.width: 1
-                                border.color: windowItem.highlighted ? Qt.alpha(theme.accent, 0.48) : win.outline
+                                radius: 3
+                                color: windowItem.highlighted ? Qt.alpha(theme.accent, 0.08) : (windowItem.hovered ? Qt.alpha("#ffffff", 0.035) : "transparent")
+                                border.width: 0
+                                Rectangle { anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom; width: 2; color: windowItem.highlighted ? theme.accent : "transparent" }
+                                Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 1; color: win.outline; opacity: 0.65 }
                             }
                             contentItem: RowLayout {
-                                spacing: 11
-                                Rectangle {
-                                    Layout.preferredWidth: 34
-                                    Layout.preferredHeight: 34
-                                    radius: 9
-                                    color: windowItem.highlighted ? Qt.alpha(theme.accent, 0.19) : "#25272c"
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: (modelData["class"] || "?").charAt(0).toUpperCase()
-                                        color: windowItem.highlighted ? theme.accent : "#c1c3ca"
-                                        font.bold: true
-                                    }
-                                }
+                                spacing: 12
                                 ColumnLayout {
                                     Layout.fillWidth: true
                                     spacing: 3
                                     Label {
                                         Layout.fillWidth: true
-                                        text: modelData.currentTitle || modelData.title || qsTr("Untitled window")
+                                        text: modelData["class"] + "  —  " + (modelData.currentTitle || modelData.title || qsTr("Untitled window"))
                                         elide: Text.ElideRight
                                         font.pixelSize: 13
-                                        font.bold: windowItem.highlighted
+                                        font.weight: windowItem.highlighted ? Font.Medium : Font.Normal
                                     }
                                     Label {
                                         Layout.fillWidth: true
-                                        text: modelData["class"] + "  ·  WS " + modelData.workspace + "  ·  " + (modelData.monitorName || qsTr("monitor %1").arg(modelData.monitor))
+                                        text: qsTr("WS %1  ·  %2").arg(modelData.workspace).arg(modelData.monitorName || qsTr("Monitor %1").arg(modelData.monitor))
                                         elide: Text.ElideRight
-                                        opacity: 0.58
+                                        color: win.mutedForeground
+                                        font.pixelSize: 11
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        visible: windowItem.highlighted
+                                        text: qsTr("PID %1  ·  %2  ·  %3 × %4  ·  %5  ·  %6")
+                                            .arg(modelData.pid)
+                                            .arg(modelData.address)
+                                            .arg(modelData.size[0])
+                                            .arg(modelData.size[1])
+                                            .arg(modelData.fullscreen ? qsTr("fullscreen") : modelData.floating ? qsTr("floating") : qsTr("tiled"))
+                                            .arg(modelData.xwayland ? "XWayland" : "Wayland")
+                                        elide: Text.ElideRight
+                                        color: win.mutedForeground
                                         font.pixelSize: 10
                                     }
                                 }
                                 Rectangle {
                                     visible: modelData.floating
-                                    Layout.preferredWidth: 7
-                                    Layout.preferredHeight: 7
-                                    radius: 4
-                                    color: "#79d49b"
+                                    Layout.preferredWidth: 48
+                                    Layout.preferredHeight: 20
+                                    radius: 3
+                                    color: Qt.alpha("#79d49b", 0.1)
+                                    Label { anchors.centerIn: parent; text: qsTr("FLOAT"); color: "#79d49b"; font.pixelSize: 9; font.weight: Font.Medium }
                                     ToolTip.visible: floatingHint.hovered
                                     ToolTip.text: qsTr("Currently floating")
                                     HoverHandler { id: floatingHint }
@@ -966,56 +994,218 @@ ApplicationWindow {
                             }
                         }
 
-                        Label {
+                        ColumnLayout {
                             anchors.centerIn: parent
                             visible: win.visibleWindows.length === 0
-                            text: backend.windows.length === 0 ? qsTr("No windows found") : qsTr("No matching windows")
-                            opacity: 0.55
+                            spacing: 10
+                            Label {
+                                Layout.fillWidth: true
+                                text: backend.windows.length === 0 ? qsTr("No windows are open") : qsTr("No windows match this search")
+                                color: win.mutedForeground
+                                horizontalAlignment: Text.AlignHCenter
+                            }
+                            Button {
+                                objectName: "clearWindowSearchAction"
+                                visible: backend.windows.length > 0
+                                Layout.alignment: Qt.AlignHCenter
+                                text: qsTr("Clear search")
+                                onClicked: headerSearch.text = ""
+                            }
                         }
                     }
 
-                    Rectangle {
+                }
+            }
+
+            ColumnLayout {
+                objectName: "desktopsPage"
+                visible: win.desktopsPage
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.margins: 20
+                spacing: 12
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Label { text: qsTr("Desktops"); font.pixelSize: 25; font.bold: true }
+                    Label {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: selectedInfo.implicitHeight + 22
-                        radius: 10
-                        color: win.raisedSurface
-                        visible: backend.selectedIndex >= 0
-                        ColumnLayout {
-                            id: selectedInfo
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.top: parent.top
-                            anchors.margins: 11
-                            spacing: 4
-                            Label { text: qsTr("RULE TARGET"); font.pixelSize: 9; font.bold: true; color: theme.accent }
-                            Label {
+                        text: qsTr("See what is open and which apps have placement rules. This view does not move windows.")
+                        color: win.mutedForeground
+                        font.pixelSize: 12
+                        wrapMode: Text.WordWrap
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Item { Layout.fillWidth: true }
+                        Button {
+                            objectName: "desktopRefreshAction"
+                            text: qsTr("Refresh")
+                            onClicked: backend.refreshWindows()
+                        }
+                        Button {
+                            objectName: "desktopManageAppsAction"
+                            text: qsTr("Manage apps")
+                            onClicked: appSpaceDialog.open()
+                        }
+                        Button {
+                            objectName: "desktopScenesAction"
+                            text: qsTr("Saved scenes")
+                            onClicked: scenesDialog.open()
+                        }
+                    }
+                }
+
+                ScrollView {
+                    id: desktopOverviewScroll
+                    objectName: "desktopOverviewScroll"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    contentWidth: availableWidth
+                    clip: true
+                    ScrollBar.vertical.policy: ScrollBar.AsNeeded
+
+                    ColumnLayout {
+                        width: desktopOverviewScroll.availableWidth
+                        spacing: 12
+
+                        Label {
+                            objectName: "desktopNoMonitorData"
+                            visible: backend.monitors.length === 0
+                            Layout.fillWidth: true
+                            text: qsTr("Hyprland monitor data is unavailable. Refresh to try again.")
+                            color: win.mutedForeground
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Repeater {
+                            model: backend.monitors
+                            delegate: Rectangle {
+                                id: monitorOverviewCard
+                                required property var modelData
+                                required property int index
+                                objectName: "desktopMonitorCard" + index
                                 Layout.fillWidth: true
-                                text: backend.selectedIndex >= 0 ? backend.windows[backend.selectedIndex].title || qsTr("No initial title") : ""
-                                font.pixelSize: 12
-                                elide: Text.ElideRight
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: backend.selectedIndex >= 0 ? backend.windows[backend.selectedIndex]["class"] : ""
-                                font.family: "monospace"
-                                font.pixelSize: 10
-                                opacity: 0.58
-                                elide: Text.ElideRight
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: backend.selectedIndex >= 0 ? qsTr("PID %1 · %2").arg(backend.windows[backend.selectedIndex].pid).arg(backend.windows[backend.selectedIndex].address) : ""
-                                font.family: "monospace"
-                                font.pixelSize: 9
-                                opacity: 0.48
-                                elide: Text.ElideMiddle
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: backend.selectedIndex >= 0 ? qsTr("%1 × %2 · %3 · %4").arg(backend.windows[backend.selectedIndex].size[0]).arg(backend.windows[backend.selectedIndex].size[1]).arg(backend.windows[backend.selectedIndex].fullscreen ? qsTr("fullscreen") : backend.windows[backend.selectedIndex].floating ? qsTr("floating") : qsTr("tiled")).arg(backend.windows[backend.selectedIndex].xwayland ? "XWayland" : "Wayland") : ""
-                                font.pixelSize: 9
-                                opacity: 0.48
-                                elide: Text.ElideRight
+                                implicitHeight: monitorOverview.implicitHeight + 24
+                                radius: 8
+                                color: win.surface
+                                border.color: win.outline
+
+                                ColumnLayout {
+                                    id: monitorOverview
+                                    anchors.fill: parent
+                                    anchors.margins: 12
+                                    spacing: 10
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 2
+                                            Label {
+                                                text: monitorOverviewCard.modelData.name || qsTr("Display %1").arg(monitorOverviewCard.index + 1)
+                                                font.pixelSize: 16
+                                                font.bold: true
+                                            }
+                                            Label {
+                                                text: monitorOverviewCard.modelData.description || qsTr("Display identity unavailable")
+                                                color: win.mutedForeground
+                                                font.pixelSize: 11
+                                                elide: Text.ElideMiddle
+                                            }
+                                        }
+                                        Label {
+                                            text: qsTr("%1×%2 · %3%")
+                                                .arg(monitorOverviewCard.modelData.width || 0)
+                                                .arg(monitorOverviewCard.modelData.height || 0)
+                                                .arg(Math.round((monitorOverviewCard.modelData.scale || 1) * 100))
+                                            color: win.mutedForeground
+                                            font.pixelSize: 11
+                                        }
+                                    }
+
+                                    GridLayout {
+                                        id: workspaceGrid
+                                        Layout.fillWidth: true
+                                        columns: width < 620 ? 1 : 2
+                                        rowSpacing: 8
+                                        columnSpacing: 8
+
+                                        Repeater {
+                                            model: backend.workspacePlan
+                                            delegate: Rectangle {
+                                                required property var modelData
+                                                readonly property string slot: modelData.slot
+                                                readonly property string monitorDescription: monitorOverviewCard.modelData.description || ""
+                                                readonly property string activeWorkspaceName:
+                                                    monitorOverviewCard.modelData.activeWorkspace
+                                                        ? String(monitorOverviewCard.modelData.activeWorkspace.name || "")
+                                                        : ""
+                                                readonly property var openWindows: backend.windows.filter(window =>
+                                                    window.monitorName === monitorOverviewCard.modelData.name
+                                                    && window.workspace === slot)
+                                                Layout.fillWidth: true
+                                                implicitHeight: workspaceTileContent.implicitHeight + 20
+                                                objectName: "desktopWorkspace" + monitorOverviewCard.index + "-" + slot
+                                                radius: 6
+                                                color: activeWorkspaceName === slot
+                                                    ? Qt.alpha(theme.accent, 0.1) : win.raisedSurface
+                                                border.color: activeWorkspaceName === slot
+                                                    ? Qt.alpha(theme.accent, 0.55) : win.outline
+                                                visible: modelData.monitor === "" || modelData.monitor === monitorDescription
+                                                    || openWindows.length > 0 || activeWorkspaceName === slot
+
+                                                ColumnLayout {
+                                                    id: workspaceTileContent
+                                                    anchors.fill: parent
+                                                    anchors.margins: 10
+                                                    spacing: 5
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        Label {
+                                                            text: qsTr("Workspace %1").arg(slot)
+                                                            font.weight: Font.Medium
+                                                        }
+                                                        Item { Layout.fillWidth: true }
+                                                        Label {
+                                                            objectName: "desktopWorkspaceActive" + monitorOverviewCard.index + "-" + slot
+                                                            visible: activeWorkspaceName === slot
+                                                            text: qsTr("ACTIVE")
+                                                            color: theme.accent
+                                                            font.pixelSize: 10
+                                                            font.bold: true
+                                                        }
+                                                        Label {
+                                                            visible: modelData.monitor === monitorDescription && monitorDescription !== ""
+                                                            text: qsTr("PINNED")
+                                                            color: win.mutedForeground
+                                                            font.pixelSize: 10
+                                                        }
+                                                    }
+                                                    Label {
+                                                        objectName: "desktopWorkspaceOpenApps" + monitorOverviewCard.index + "-" + slot
+                                                        Layout.fillWidth: true
+                                                        text: openWindows.length > 0
+                                                            ? openWindows.map(window => window.currentTitle || window["class"]).join(", ")
+                                                            : qsTr("No open windows")
+                                                        color: openWindows.length > 0 ? "#d5dde2" : win.mutedForeground
+                                                        font.pixelSize: 11
+                                                        wrapMode: Text.WordWrap
+                                                    }
+                                                    Label {
+                                                        Layout.fillWidth: true
+                                                        visible: (modelData.apps || []).length > 0
+                                                        text: qsTr("Placement rules: %1").arg((modelData.apps || []).join(", "))
+                                                        color: win.mutedForeground
+                                                        font.pixelSize: 10
+                                                        wrapMode: Text.WordWrap
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1024,7 +1214,7 @@ ApplicationWindow {
 
             ColumnLayout {
                 objectName: "editorPage"
-                visible: !win.windowsPage
+                visible: !win.windowsPage && !win.desktopsPage
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.margins: 20
@@ -1048,25 +1238,24 @@ ApplicationWindow {
 
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 74
-                    radius: 8
-                    color: win.surface
-                    border.color: win.outline
+                    Layout.preferredHeight: 64
+                    radius: 0
+                    color: "transparent"
+                    border.color: "transparent"
+                    Rectangle { anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.right: parent.right; height: 1; color: win.outline }
                     RowLayout {
                         anchors.fill: parent
-                        anchors.margins: 12
+                        anchors.leftMargin: 2
+                        anchors.rightMargin: 4
+                        anchors.topMargin: 8
+                        anchors.bottomMargin: 8
                         spacing: 12
-                        Rectangle {
-                            Layout.preferredWidth: 36; Layout.preferredHeight: 36; radius: 8
-                            color: Qt.alpha(theme.accent, 0.13)
-                            Label { anchors.centerIn: parent; text: "▣"; color: theme.accent; font.pixelSize: 20 }
-                        }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 3
                             Label {
-                                text: win.editingRuleIndex >= 0 ? qsTr("EDITING SAVED RULE") : qsTr("SELECTED WINDOW")
-                                color: theme.accent; font.pixelSize: 9; font.bold: true
+                                text: win.editingRuleIndex >= 0 ? qsTr("Editing saved rule") : qsTr("Selected window")
+                                color: win.mutedForeground; font.pixelSize: 10; font.weight: Font.Medium
                             }
                             Label {
                                 Layout.fillWidth: true
@@ -1075,7 +1264,9 @@ ApplicationWindow {
                             }
                             Label {
                                 Layout.fillWidth: true
-                                text: backend.selectedIndex >= 0 ? backend.selectedWindow["class"] + "  ·  " + qsTr("Workspace %1").arg(backend.selectedWindow.workspace) : qsTr("Use Windows in the sidebar to choose a target.")
+                                text: backend.selectedIndex >= 0
+                                    ? backend.selectedWindow["class"] + "  ·  WS " + backend.selectedWindow.workspace + "  ·  " + (backend.selectedWindow.monitorName || qsTr("Monitor %1").arg(backend.selectedWindow.monitor))
+                                    : qsTr("Use Windows in the sidebar to choose a target.")
                                 color: win.mutedForeground; font.pixelSize: 10; elide: Text.ElideRight
                             }
                         }
@@ -1103,12 +1294,12 @@ ApplicationWindow {
 
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    implicitHeight: layoutCard.implicitHeight + 30
-                                    radius: 13; color: win.surface; border.color: win.outline
+                                     implicitHeight: layoutCard.implicitHeight + 24
+                                     radius: 0; color: "transparent"; border.color: "transparent"
                                     ColumnLayout {
                                         id: layoutCard
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                        anchors.margins: 16; spacing: 14
+                                         anchors.margins: 12; spacing: 14
                                         ColumnLayout {
                                             spacing: 3
                                             ModuleHeading {
@@ -1139,21 +1330,36 @@ ApplicationWindow {
                                         Flow {
                                             Layout.fillWidth: true
                                             spacing: 7
-                                            Button { text: qsTr("Compact · 500 × 500"); onClicked: win.applyPreset(500, 500, true, 0, 0) }
-                                            Button { text: qsTr("Picture-in-picture"); onClicked: win.applyPreset(420, 280, false, 24, 64) }
-                                            Button { text: qsTr("Large · 900 × 700"); onClicked: win.applyPreset(900, 700, true, 0, 0) }
+                                             Button {
+                                                 id: compactPreset
+                                                 text: qsTr("Compact · 500 × 500")
+                                                 onClicked: win.applyPreset(500, 500, true, 0, 0)
+                                                 background: Rectangle { radius: 4; color: compactPreset.hovered ? win.raisedSurface : "transparent"; border.color: compactPreset.hovered ? theme.accent : win.outline }
+                                             }
+                                             Button {
+                                                 id: pipPreset
+                                                 text: qsTr("Picture-in-picture")
+                                                 onClicked: win.applyPreset(420, 280, false, 24, 64)
+                                                 background: Rectangle { radius: 4; color: pipPreset.hovered ? win.raisedSurface : "transparent"; border.color: pipPreset.hovered ? theme.accent : win.outline }
+                                             }
+                                             Button {
+                                                 id: largePreset
+                                                 text: qsTr("Large · 900 × 700")
+                                                 onClicked: win.applyPreset(900, 700, true, 0, 0)
+                                                 background: Rectangle { radius: 4; color: largePreset.hovered ? win.raisedSurface : "transparent"; border.color: largePreset.hovered ? theme.accent : win.outline }
+                                             }
                                         }
                                     }
                                 }
 
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    implicitHeight: sizeContent.implicitHeight + 30
-                                    radius: 13; color: win.surface; border.color: win.outline
+                                     implicitHeight: sizeContent.implicitHeight + 24
+                                     radius: 0; color: "transparent"; border.color: "transparent"
                                     ColumnLayout {
                                         id: sizeContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                        anchors.margins: 16; spacing: 12
+                                         anchors.margins: 12; spacing: 12
                                         ColumnLayout {
                                             spacing: 3
                                             ModuleHeading {
@@ -1202,13 +1408,13 @@ ApplicationWindow {
 
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    implicitHeight: constraintsContent.implicitHeight + 30
+                                     implicitHeight: constraintsContent.implicitHeight + 24
                                     visible: win.advancedMode
-                                    radius: 13; color: win.surface; border.color: win.outline
+                                     radius: 0; color: "transparent"; border.color: "transparent"
                                     ColumnLayout {
                                         id: constraintsContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                        anchors.margins: 16; spacing: 8
+                                         anchors.margins: 12; spacing: 8
                                         ModuleHeading {
                                             title: qsTr("Size constraints"); helpKey: "constraints"
                                             explanation: qsTr("Optionally limit how small or large matching windows can become. Enable Minimum or Maximum and enter width × height in logical pixels. Leave a limit unchecked to omit it from the rule. Applications may also enforce their own size limits.")
@@ -1239,15 +1445,15 @@ ApplicationWindow {
                             ColumnLayout {
                                 id: placementContent
                                 width: parent.width
-                                spacing: 12
+                                 spacing: 18
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    implicitHeight: placementCard.implicitHeight + 30
-                                    radius: 13; color: win.surface; border.color: win.outline
+                                     implicitHeight: placementCard.implicitHeight + 24
+                                     radius: 0; color: "transparent"; border.color: "transparent"
                                     ColumnLayout {
                                         id: placementCard
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                        anchors.margins: 16; spacing: 14
+                                         anchors.margins: 12; spacing: 14
                                         ModuleHeading {
                                             title: qsTr("Workspace & visibility"); helpKey: "workspace"
                                             explanation: qsTr("Choose the workspace where matching windows should open. Leave Workspace empty to keep the current workspace behavior. Add silent, for example 3 silent, to avoid switching to that workspace. Pin keeps a floating window visible as you change workspaces.")
@@ -1271,12 +1477,12 @@ ApplicationWindow {
                                 }
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    implicitHeight: scopeCard.implicitHeight + 30
-                                    radius: 13; color: win.surface; border.color: win.outline
+                                     implicitHeight: scopeCard.implicitHeight + 24
+                                     radius: 0; color: "transparent"; border.color: "transparent"
                                     ColumnLayout {
                                         id: scopeCard
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                        anchors.margins: 16; spacing: 9
+                                         anchors.margins: 12; spacing: 9
                                         ModuleHeading {
                                             title: qsTr("Rule matching"); helpKey: "matching"
                                             explanation: qsTr("Decide which windows receive this rule. Class identifies the application; matching the initial title narrows it to a particular kind of window. Exact, Contains, and Regular expression control how text is compared. Extra conditions narrow the match further. Windows with identical class and title can share the rule.")
@@ -1345,15 +1551,15 @@ ApplicationWindow {
                             ColumnLayout {
                                 id: appearanceContent
                                 width: parent.width
-                                spacing: 12
+                                 spacing: 18
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    implicitHeight: opacityContent.implicitHeight + 30
-                                    radius: 13; color: win.surface; border.color: win.outline
+                                     implicitHeight: opacityContent.implicitHeight + 24
+                                     radius: 0; color: "transparent"; border.color: "transparent"
                                     ColumnLayout {
                                         id: opacityContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                        anchors.margins: 16; spacing: 10
+                                         anchors.margins: 12; spacing: 10
                                         RowLayout {
                                             Layout.fillWidth: true
                                             ColumnLayout {
@@ -1385,12 +1591,12 @@ ApplicationWindow {
                                 }
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    implicitHeight: chromeContent.implicitHeight + 30
-                                    radius: 13; color: win.surface; border.color: win.outline
+                                     implicitHeight: chromeContent.implicitHeight + 24
+                                     radius: 0; color: "transparent"; border.color: "transparent"
                                     ColumnLayout {
                                         id: chromeContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                        anchors.margins: 16; spacing: 10
+                                         anchors.margins: 12; spacing: 10
                                         ModuleHeading {
                                             title: qsTr("Window decoration"); helpKey: "decoration"
                                             explanation: qsTr("Override the compositor's border thickness and corner rounding for matching windows. Values are in pixels; zero removes that decoration. Each override must be enabled separately. Unchecked options keep the normal theme or other applicable rules.")
@@ -1413,12 +1619,12 @@ ApplicationWindow {
                                 }
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    implicitHeight: effectsContent.implicitHeight + 30
-                                    radius: 13; color: win.surface; border.color: win.outline
+                                    implicitHeight: effectsContent.implicitHeight + 24
+                                    radius: 0; color: "transparent"; border.color: "transparent"
                                     ColumnLayout {
                                         id: effectsContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                        anchors.margins: 16; spacing: 8
+                                        anchors.margins: 12; spacing: 8
                                         ModuleHeading {
                                             title: qsTr("Visual effects"); helpKey: "effects"
                                             explanation: qsTr("Disable background blur or the outside window shadow for matching windows. These checkboxes turn effects off, not on. Leaving them unchecked omits the override and lets your normal Hyprland configuration decide.")
@@ -1436,15 +1642,15 @@ ApplicationWindow {
                             ColumnLayout {
                                 id: behaviorContent
                                 width: parent.width
-                                spacing: 12
+                                spacing: 18
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    implicitHeight: focusContent.implicitHeight + 30
-                                    radius: 13; color: win.surface; border.color: win.outline
+                                    implicitHeight: focusContent.implicitHeight + 24
+                                    radius: 0; color: "transparent"; border.color: "transparent"
                                     ColumnLayout {
                                         id: focusContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                        anchors.margins: 16; spacing: 8
+                                        anchors.margins: 12; spacing: 8
                                         ModuleHeading {
                                             title: qsTr("Focus & interaction"); helpKey: "focus"
                                             explanation: qsTr("Prevent matching windows from taking keyboard focus automatically when they open. This is useful for passive panels and notifications. You can still focus the window yourself later; the option does not disable keyboard or mouse input.")
@@ -1455,12 +1661,12 @@ ApplicationWindow {
                                 }
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    implicitHeight: performanceContent.implicitHeight + 30
-                                    radius: 13; color: win.surface; border.color: win.outline
+                                    implicitHeight: performanceContent.implicitHeight + 24
+                                    radius: 0; color: "transparent"; border.color: "transparent"
                                     ColumnLayout {
                                         id: performanceContent
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                        anchors.margins: 16; spacing: 8
+                                        anchors.margins: 12; spacing: 8
                                         ModuleHeading {
                                             title: qsTr("Performance & persistence"); helpKey: "performance"
                                             explanation: qsTr("Set per-window exceptions for animations, inactive-window dimming, and variable refresh rate (VRR). Remember floating size asks Hyprland to preserve the floating size for matching windows. These settings apply to this rule's targets, not the whole desktop.")
@@ -1480,15 +1686,15 @@ ApplicationWindow {
                             ColumnLayout {
                                 id: savedRulesContent
                                 width: parent.width
-                                spacing: 12
+                                spacing: 18
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    implicitHeight: savedIntro.implicitHeight + 32
-                                    radius: 13; color: win.surface; border.color: win.outline
+                                    implicitHeight: savedIntro.implicitHeight + 24
+                                    radius: 0; color: "transparent"; border.color: "transparent"
                                     ColumnLayout {
                                         id: savedIntro
                                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                        anchors.margins: 16; spacing: 5
+                                        anchors.margins: 12; spacing: 5
                                         ModuleHeading {
                                             title: qsTr("Saved rules"); helpKey: "saved"
                                             explanation: qsTr("Manage rules stored in your Hyprland configuration. Enable or disable, apply to matching open windows, duplicate, edit, reorder, or remove a rule using its row actions. Overlap warns that rules may target the same windows. Import and export transfer the complete collection as JSON; review imports before confirming.")
@@ -1511,8 +1717,8 @@ ApplicationWindow {
                                         required property var modelData
                                         required property int index
                                         Layout.fillWidth: true
-                                        implicitHeight: ruleRow.implicitHeight + 26
-                                        radius: 12; color: win.surface; border.color: win.outline
+                                         implicitHeight: ruleRow.implicitHeight + 18
+                                         radius: 3; color: "transparent"; border.color: win.outline
                                         RowLayout {
                                             id: ruleRow
                                             anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
@@ -1615,7 +1821,7 @@ ApplicationWindow {
                         spacing: 5
                         RowLayout {
                             Layout.fillWidth: true
-                            Label { text: qsTr("RULE PREVIEW"); font.pixelSize: 9; font.bold: true; color: theme.accent }
+                            Label { text: qsTr("Rule preview"); font.pixelSize: 10; font.weight: Font.Medium; color: win.mutedForeground }
                             Item { Layout.fillWidth: true }
                             ToolButton { text: win.previewExpanded ? "⌄" : "⌃"; onClicked: win.previewExpanded = !win.previewExpanded }
                         }

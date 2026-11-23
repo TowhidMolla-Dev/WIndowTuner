@@ -9,8 +9,8 @@ StudioDialog {
     font.pixelSize: Math.round(13 * host.textScale)
     objectName: "appSpaceDialog"
     anchors.centerIn: parent
-    width: Math.min(host.width - 48, 1080)
-    height: Math.min(host.height - 48, 760)
+    width: Math.min(host.width - 24, 1360)
+    height: Math.min(host.height - 24, 900)
     modal: true
     title: qsTr("Apps, workspaces & displays")
     standardButtons: Dialog.Close
@@ -703,55 +703,72 @@ StudioDialog {
                     clip: true
                     spacing: 4
                     model: backend.workspacePlan
-                    ScrollBar.vertical: ScrollBar {}
+                    ScrollBar.vertical: ScrollBar {
+                        width: 8
+                        opacity: 0.7
+                        policy: workspaceList.contentHeight > workspaceList.height
+                            ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
+                    }
                     delegate: Rectangle {
                         required property var modelData
                         width: ListView.view.width
-                        implicitHeight: row.implicitHeight + 16
+                        implicitHeight: workspaceRow.implicitHeight + 16
                         radius: 6
                         color: "#15212a"
                         border.color: "#24313b"
-                        RowLayout {
-                            id: row
+                        ColumnLayout {
+                            id: workspaceRow
                             anchors.fill: parent
                             anchors.margins: 8
-                            spacing: 8
-                            Label {
-                                text: qsTr("Workspace %1").arg(modelData.slot)
-                                Layout.preferredWidth: 110
-                                font.bold: true
-                            }
-                            ComboBox {
-                                id: workspaceMonitor
-                                Layout.preferredWidth: 260
-                                model: dialog.monitorOptions
-                                textRole: "label"
-                                currentIndex: dialog.monitorIndex(modelData.monitor)
-                            }
-                            CheckBox {
-                                id: workspacePersistent
-                                text: qsTr("Always present")
-                                checked: modelData.persistent === true
-                            }
-                            Label {
+                            spacing: 4
+                            RowLayout {
                                 Layout.fillWidth: true
-                                elide: Text.ElideRight
+                                spacing: 8
+                                Label {
+                                    text: qsTr("Workspace %1").arg(modelData.slot)
+                                    Layout.preferredWidth: 100
+                                    font.weight: Font.Medium
+                                }
+                                ComboBox {
+                                    id: workspaceMonitor
+                                    Accessible.name: qsTr("Display for workspace %1").arg(modelData.slot)
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 150
+                                    Layout.maximumWidth: 320
+                                    model: dialog.monitorOptions
+                                    textRole: "label"
+                                    currentIndex: dialog.monitorIndex(modelData.monitor)
+                                }
+                                CheckBox {
+                                    id: workspacePersistent
+                                    text: qsTr("Always present")
+                                    Accessible.name: qsTr("Keep workspace %1 always present").arg(modelData.slot)
+                                    checked: modelData.persistent === true
+                                }
+                                Button {
+                                    text: qsTr("Save")
+                                    Accessible.name: qsTr("Save workspace %1 placement").arg(modelData.slot)
+                                    onClicked: dialog.saveWorkspace(modelData.slot,
+                                        dialog.monitorOptions[workspaceMonitor.currentIndex].value,
+                                        workspacePersistent.checked)
+                                }
+                                Button {
+                                    text: qsTr("Clear")
+                                    Accessible.name: qsTr("Clear workspace %1 placement").arg(modelData.slot)
+                                    enabled: (modelData.monitor || "") !== ""
+                                    onClicked: dialog.clearWorkspace(modelData.slot)
+                                }
+                            }
+                            Label {
+                                objectName: "workspaceAppsSummary"
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 108
+                                wrapMode: Text.WordWrap
                                 color: "#93a4b3"
-                                font.pixelSize: 10
+                                font.pixelSize: 11
                                 text: (modelData.apps || []).length > 0
-                                    ? (modelData.apps || []).join(", ")
+                                    ? qsTr("Assigned apps: %1").arg((modelData.apps || []).join(", "))
                                     : qsTr("No apps assigned")
-                            }
-                            Button {
-                                text: qsTr("Save")
-                                onClicked: dialog.saveWorkspace(modelData.slot,
-                                    dialog.monitorOptions[workspaceMonitor.currentIndex].value,
-                                    workspacePersistent.checked)
-                            }
-                            Button {
-                                text: qsTr("Clear")
-                                enabled: (modelData.monitor || "") !== ""
-                                onClicked: dialog.clearWorkspace(modelData.slot)
                             }
                         }
                     }

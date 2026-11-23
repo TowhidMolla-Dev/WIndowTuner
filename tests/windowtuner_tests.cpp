@@ -215,6 +215,138 @@ private slots:
                      output.toUtf8().constData());
         }
     }
+    void namedScenesCapturePreviewAndApplyOnlyMatchedWindows()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        QVERIFY(fixture.write("clients.json",
+            R"([{"address":"0xabc","class":"org.example.Editor","initialClass":"org.example.Editor","title":"PRIVATE-SCENE-TITLE","initialTitle":"PRIVATE-SCENE-TITLE","workspace":{"name":"2"},"monitor":0,"at":[250,140],"size":[900,700],"floating":true,"fullscreen":0}])"));
+        QVERIFY(fixture.write("hyprctl",
+            "#!/bin/sh\n"
+            "if [ \"$2\" = clients ]; then cat '" + fixture.dir.filePath("clients.json").toUtf8() + "'; "
+            "elif [ \"$2\" = monitors ]; then echo '[{\"id\":0,\"name\":\"DP-1\",\"description\":\"Monitor A\",\"x\":0,\"y\":0,\"width\":1920,\"height\":1080,\"scale\":1,\"activeWorkspace\":{\"id\":2,\"name\":\"2\"}}]'; "
+            "elif [ \"$1\" = eval ]; then printf '%s\\n' \"$2\" >> '" + fixture.dir.filePath("eval.log").toUtf8() + "'; echo ok; fi\n"
+            "exit 0\n", true));
+
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        bool captured = false;
+        QVERIFY(QMetaObject::invokeMethod(&backend, "captureScene", Q_RETURN_ARG(bool, captured),
+                                          Q_ARG(QString, "Work")));
+        QVERIFY(captured);
+        const QVariantList scenes = backend.property("scenes").toList();
+        QCOMPARE(scenes.size(), 1);
+        const QString sceneId = scenes.first().toMap().value("id").toString();
+        QVERIFY(!sceneId.isEmpty());
+        QVERIFY(!scenes.first().toMap().contains("windows"));
+        QVERIFY(QMetaObject::invokeMethod(&backend, "captureScene", Q_RETURN_ARG(bool, captured),
+                                          Q_ARG(QString, "work")));
+        QVERIFY(!captured);
+        QVERIFY(QMetaObject::invokeMethod(&backend, "captureScene", Q_RETURN_ARG(bool, captured),
+                                          Q_ARG(QString, "   ")));
+        QVERIFY(!captured);
+
+        QVariantMap preview;
+        QVERIFY(QMetaObject::invokeMethod(&backend, "previewScene", Q_RETURN_ARG(QVariantMap, preview),
+                                          Q_ARG(QString, sceneId)));
+        QCOMPARE(preview.value("matched").toInt(), 1);
+        QCOMPARE(preview.value("missing").toInt(), 0);
+        const QVariantMap previewItem = preview.value("items").toList().first().toMap();
+        QVERIFY(!previewItem.contains("address"));
+        QVERIFY(!previewItem.contains("title"));
+        QVERIFY(!QFileInfo::exists(fixture.dir.filePath("eval.log")));
+
+        bool opened = false;
+        QVERIFY(QMetaObject::invokeMethod(&backend, "openScene", Q_RETURN_ARG(bool, opened),
+                                          Q_ARG(QString, sceneId)));
+        QVERIFY(opened);
+        QFile log(fixture.dir.filePath("eval.log"));
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        const QByteArray applied = log.readAll();
+        QVERIFY(applied.contains("address:0xabc"));
+        QVERIFY(applied.contains("workspace = \"2\""));
+        QVERIFY(applied.contains("x = 900"));
+        QVERIFY(applied.contains("y = 700"));
+        log.close();
+
+        QFile library(fixture.dir.filePath("windowtuner-library.json"));
+        QVERIFY(library.open(QIODevice::ReadOnly));
+        const QByteArray stored = library.readAll();
+        QVERIFY(!stored.contains("PRIVATE-SCENE-TITLE"));
+        QVERIFY(!stored.contains("0xabc"));
+        Backend reopened(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QCOMPARE(reopened.property("scenes").toList().size(), 1);
+
+        QVERIFY(fixture.write("clients.json", "[]"));
+        backend.refreshWindows();
+        QVERIFY(QMetaObject::invokeMethod(&backend, "previewScene", Q_RETURN_ARG(QVariantMap, preview),
+                                          Q_ARG(QString, sceneId)));
+        QCOMPARE(preview.value("matched").toInt(), 0);
+        QCOMPARE(preview.value("missing").toInt(), 1);
+        QVERIFY(QMetaObject::invokeMethod(&backend, "openScene", Q_RETURN_ARG(bool, opened),
+                                          Q_ARG(QString, sceneId)));
+        QVERIFY(!opened);
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        QCOMPARE(log.readAll(), applied);
+        QVERIFY(QMetaObject::invokeMethod(&backend, "captureScene", Q_RETURN_ARG(bool, captured),
+                                          Q_ARG(QString, "Empty")));
+        QVERIFY(!captured);
+        bool removed = false;
+        QVERIFY(QMetaObject::invokeMethod(&backend, "removeScene", Q_RETURN_ARG(bool, removed),
+                                          Q_ARG(QString, sceneId)));
+        QVERIFY(removed);
+        QCOMPARE(backend.property("scenes").toList().size(), 0);
+    }
+    void sessionSnapshotsAreOptInDebouncedAndManuallyRestored()
+    {
+        DesktopFixture fixture; QVERIFY(fixture.initialize());
+        const QByteArray firstClient =
+            R"([{"address":"0xfeed","class":"org.example.Editor","initialClass":"org.example.Editor","title":"SESSION-PRIVATE-TITLE","initialTitle":"SESSION-PRIVATE-TITLE","workspace":{"name":"2"},"monitor":0,"at":[250,140],"size":[900,700],"floating":true,"fullscreen":0}])";
+        QVERIFY(fixture.write("clients.json", firstClient));
+        QVERIFY(fixture.write("hyprctl",
+            "#!/bin/sh\n"
+            "if [ \"$2\" = clients ]; then cat '" + fixture.dir.filePath("clients.json").toUtf8() + "'; "
+            "elif [ \"$2\" = monitors ]; then echo '[{\"id\":0,\"name\":\"DP-1\",\"description\":\"Monitor A\",\"x\":0,\"y\":0,\"width\":1920,\"height\":1080,\"scale\":1,\"activeWorkspace\":{\"id\":2,\"name\":\"2\"}}]'; "
+            "elif [ \"$1\" = eval ]; then printf '%s\\n' \"$2\" >> '" + fixture.dir.filePath("eval.log").toUtf8() + "'; echo ok; fi\n"
+            "exit 0\n", true));
+        Backend backend(fixture.dir.path(), fixture.dir.filePath("hyprland.lua"), fixture.dir.filePath("hyprctl"));
+        QVERIFY(!backend.property("sessionSnapshotsEnabled").toBool());
+        QCOMPARE(backend.property("sessionSnapshots").toList().size(), 0);
+        QVERIFY(backend.setSessionSnapshotsEnabled(true));
+        QVERIFY(backend.property("sessionSnapshotsEnabled").toBool());
+        QCOMPARE(backend.property("sessionSnapshots").toList().size(), 1);
+        const QString oldestId = backend.property("sessionSnapshots").toList().first().toMap().value("id").toString();
+
+        QVERIFY(fixture.write("clients.json",
+            R"([{"address":"0xfeed","class":"org.example.Editor","initialClass":"org.example.Editor","title":"SESSION-PRIVATE-TITLE","initialTitle":"SESSION-PRIVATE-TITLE","workspace":{"name":"2"},"monitor":0,"at":[500,240],"size":[800,600],"floating":true,"fullscreen":0}])"));
+        QVERIFY(QMetaObject::invokeMethod(&backend, "handleHyprlandEvent"));
+        QTRY_COMPARE_WITH_TIMEOUT(backend.property("sessionSnapshots").toList().size(), 2, 5000);
+        QVariantMap preview;
+        QVERIFY(QMetaObject::invokeMethod(&backend, "previewSessionSnapshot", Q_RETURN_ARG(QVariantMap, preview),
+                                          Q_ARG(QString, oldestId)));
+        QCOMPARE(preview.value("matched").toInt(), 1);
+        QCOMPARE(preview.value("missing").toInt(), 0);
+        QVERIFY(!preview.value("items").toList().first().toMap().contains("address"));
+
+        bool restored = false;
+        QVERIFY(QMetaObject::invokeMethod(&backend, "restoreSessionSnapshot", Q_RETURN_ARG(bool, restored),
+                                          Q_ARG(QString, oldestId)));
+        QVERIFY(restored);
+        QFile log(fixture.dir.filePath("eval.log"));
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        const QByteArray commands = log.readAll();
+        QVERIFY(commands.contains("address:0xfeed"));
+        QVERIFY(commands.contains("workspace = \"2\""));
+        QFile library(fixture.dir.filePath("windowtuner-library.json"));
+        QVERIFY(library.open(QIODevice::ReadOnly));
+        const QByteArray stored = library.readAll();
+        QVERIFY(!stored.contains("SESSION-PRIVATE-TITLE"));
+        QVERIFY(!stored.contains("0xfeed"));
+
+        QVERIFY(backend.setSessionSnapshotsEnabled(false));
+        QCOMPARE(backend.property("sessionSnapshotsEnabled").toBool(), false);
+        QVERIFY(QMetaObject::invokeMethod(&backend, "handleHyprlandEvent"));
+        QTest::qWait(2000);
+        QCOMPARE(backend.property("sessionSnapshots").toList().size(), 2);
+    }
     void workspacePinsResolveGeneratedSlots()
     {
         DesktopFixture fixture; QVERIFY(fixture.initialize());
@@ -422,6 +554,11 @@ private slots:
         for (const auto &size : QList<QSize>{{860, 680}, {1120, 820}, {1440, 900}}) {
             window->resize(size);
             QTest::qWait(100);
+            if (!screenshots.isEmpty()) {
+                QDir().mkpath(screenshots);
+                QVERIFY(window->grabWindow().save(screenshots + "/windows-"
+                    + QString("%1x%2.png").arg(size.width()).arg(size.height())));
+            }
             for (const auto &name : names) {
                 auto *popup = window->findChild<QObject *>(name); QVERIFY2(popup, qPrintable(name));
                 QVERIFY(QMetaObject::invokeMethod(popup, "open"));
@@ -429,6 +566,8 @@ private slots:
                 window->grabWindow();
                 QVERIFY(popup->property("width").toDouble() <= window->width());
                 QVERIFY(popup->property("height").toDouble() <= window->height());
+                if (name == "appSpaceDialog")
+                    QCOMPARE(qRound(popup->property("width").toDouble()), qMin(size.width() - 24, 1360));
                 auto *scroll = popup->findChild<QQuickItem *>("toolScroll"); QVERIFY(scroll);
                 QVERIFY(scroll->property("contentWidth").toDouble() <= scroll->property("availableWidth").toDouble() + 1);
                 const auto rendered = window->grabWindow();
@@ -463,6 +602,21 @@ private slots:
                         QCOMPARE(placement.value("unit").toString(), QString("pixels"));
                         QVERIFY(placement.value("width").toInt() < 960);
                     }
+                    popup->setProperty("placement", QVariantMap{{"enabled", true}, {"monitor", "DP-1"},
+                        {"unit", "pixels"}, {"width", 600}, {"height", 420}, {"anchor", "custom"},
+                        {"x", 240}, {"y", 180}});
+                    auto *positionX = visualItem(window->contentItem(), "placementX");
+                    auto *positionY = visualItem(window->contentItem(), "placementY");
+                    QVERIFY(positionX && positionY);
+                    QVERIFY(positionX->isVisible() && positionY->isVisible());
+                    QCOMPARE(positionX->property("value").toInt(), 240);
+                    QCOMPARE(positionY->property("value").toInt(), 180);
+                    positionX->setProperty("value", 280);
+                    QVERIFY(QMetaObject::invokeMethod(positionX, "valueModified", Qt::DirectConnection));
+                    const auto updatedRaw = popup->property("placement");
+                    const auto updatedPlacement = updatedRaw.metaType().id() == qMetaTypeId<QJSValue>()
+                        ? updatedRaw.value<QJSValue>().toVariant().toMap() : updatedRaw.toMap();
+                    QCOMPARE(updatedPlacement.value("x").toInt(), 280);
                 }
                 if (name == "appSpaceDialog") {
                     // Every tab must lay out without warnings or clipped content.
@@ -476,6 +630,11 @@ private slots:
                         auto *page = visualItem(window->contentItem(), tabItems[tab]);
                         QVERIFY2(page, qPrintable(tabItems[tab]));
                         QVERIFY(page->isVisible());
+                        if (tab == 1) {
+                            auto *summary = visualItem(window->contentItem(), "workspaceAppsSummary");
+                            QVERIFY(summary && summary->isVisible());
+                            QVERIFY(summary->property("wrapMode").toInt() != 0);
+                        }
                         window->grabWindow();
                         if (!screenshots.isEmpty())
                             QVERIFY(window->grabWindow().save(screenshots + "/appSpaceDialog-"
@@ -486,6 +645,44 @@ private slots:
                 if (!screenshots.isEmpty()) {
                     QDir().mkpath(screenshots);
                     QVERIFY(window->grabWindow().save(screenshots + "/" + name + QString("-%1x%2.png").arg(size.width()).arg(size.height())));
+                }
+                if (name == "healthDialog") {
+                    auto *toggle = visualItem(window->contentItem(), "toggleConfigErrorsAction");
+                    auto *details = visualItem(window->contentItem(), "configErrorsDetails");
+                    QVERIFY(toggle && details);
+                    QVERIFY(!details->isVisible());
+                    QVERIFY(QMetaObject::invokeMethod(toggle, "click"));
+                    QTRY_VERIFY(details->isVisible());
+                    QVERIFY(QMetaObject::invokeMethod(toggle, "click"));
+                    QTRY_VERIFY(!details->isVisible());
+                    popup->setProperty("verification", QVariantMap{{"details", "Fixture verification details"}});
+                    auto *verificationToggle = visualItem(window->contentItem(), "toggleVerificationDetailsAction");
+                    auto *verificationDetails = visualItem(window->contentItem(), "verificationDetails");
+                    QVERIFY(verificationToggle && verificationDetails);
+                    QVERIFY(verificationToggle->isVisible());
+                    QVERIFY(!verificationDetails->isVisible());
+                    QVERIFY(QMetaObject::invokeMethod(verificationToggle, "click"));
+                    QTRY_VERIFY(verificationDetails->isVisible());
+                    QVERIFY(QMetaObject::invokeMethod(verificationToggle, "click"));
+                    QTRY_VERIFY(!verificationDetails->isVisible());
+                }
+                if (name == "inspectorDialog") {
+                    auto *evaluationToggle = visualItem(window->contentItem(), "toggleEvaluationDetailsAction");
+                    auto *evaluationDetails = visualItem(window->contentItem(), "evaluationDetails");
+                    QVERIFY(evaluationToggle && evaluationDetails);
+                    QVERIFY(!evaluationDetails->isVisible());
+                    QVERIFY(QMetaObject::invokeMethod(evaluationToggle, "click"));
+                    QTRY_VERIFY(evaluationDetails->isVisible());
+                    QVERIFY(QMetaObject::invokeMethod(evaluationToggle, "click"));
+                    QTRY_VERIFY(!evaluationDetails->isVisible());
+                    auto *toggle = visualItem(window->contentItem(), "toggleWindowPropertiesAction");
+                    auto *details = visualItem(window->contentItem(), "windowPropertiesDetails");
+                    QVERIFY(toggle && details);
+                    QVERIFY(!details->isVisible());
+                    QVERIFY(QMetaObject::invokeMethod(toggle, "click"));
+                    QTRY_VERIFY(details->isVisible());
+                    QVERIFY(QMetaObject::invokeMethod(toggle, "click"));
+                    QTRY_VERIFY(!details->isVisible());
                 }
                 QVERIFY(QMetaObject::invokeMethod(popup, "close"));
                 QTRY_VERIFY(!popup->property("opened").toBool());
@@ -746,7 +943,7 @@ private slots:
         config.close();
         QFile script(dir.filePath("hyprctl"));
         QVERIFY(script.open(QIODevice::WriteOnly));
-        script.write("#!/bin/sh\nif [ \"$2\" = clients ]; then echo '[{\"address\":\"0x1\",\"class\":\"foot\",\"initialClass\":\"foot\",\"title\":\"Terminal\",\"initialTitle\":\"Terminal\",\"workspace\":{\"name\":\"1\"},\"at\":[0,0],\"size\":[800,600]}]'; fi\nexit 0\n");
+        script.write("#!/bin/sh\nif [ \"$2\" = clients ]; then echo '[{\"address\":\"0x1\",\"class\":\"foot\",\"initialClass\":\"foot\",\"title\":\"Terminal\",\"initialTitle\":\"Terminal\",\"workspace\":{\"name\":\"1\"},\"monitor\":0,\"at\":[0,0],\"size\":[800,600]}]'; fi\nif [ \"$2\" = monitors ]; then echo '[{\"id\":0,\"name\":\"DP-1\",\"description\":\"Test Display\",\"width\":1920,\"height\":1080,\"scale\":1,\"activeWorkspace\":{\"id\":1,\"name\":\"1\"}}]'; fi\nexit 0\n");
         script.close();
         QVERIFY(script.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         Backend backend(dir.path(), config.fileName(), script.fileName());
@@ -771,6 +968,10 @@ private slots:
             return nullptr;
         };
         auto item = [&](const char *name) { return findVisual(window->contentItem(), QString::fromLatin1(name)); };
+        auto clickItem = [&](QQuickItem *target) {
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                              target->mapToScene(QPointF(target->width() / 2, target->height() / 2)).toPoint());
+        };
         auto navigate = [&](int section) {
             QVERIFY(QMetaObject::invokeMethod(window, "navigate", Q_ARG(QVariant, section)));
             // Layout polishing and Material animations run on subsequent frames.
@@ -779,10 +980,94 @@ private slots:
         };
         QVERIFY(item("headerSearch"));
         QVERIFY(item("windowsPage")->isVisible());
+        auto *desktopsNavigation = item("desktopsNavigation");
+        QVERIFY(desktopsNavigation && desktopsNavigation->isVisible());
+        clickItem(desktopsNavigation);
+        QTRY_VERIFY(window->property("desktopsPage").toBool());
+        auto *desktopsPage = item("desktopsPage");
+        QVERIFY(desktopsPage && desktopsPage->isVisible());
+        QCOMPARE(item("sectionNavigation4")->property("selected").toBool(), false);
+        QCOMPARE(item("headerSearch")->property("text").toString(), QString());
+        auto *workspaceTile = item("desktopWorkspace0-1");
+        QVERIFY(workspaceTile && workspaceTile->isVisible());
+        auto *activeWorkspaceLabel = item("desktopWorkspaceActive0-1");
+        QVERIFY(activeWorkspaceLabel && activeWorkspaceLabel->isVisible());
+        auto *openApps = item("desktopWorkspaceOpenApps0-1");
+        QVERIFY(openApps);
+        QCOMPARE(openApps->property("text").toString(), QString("Terminal"));
+        QCOMPARE(backend.windows().size(), 1);
+        clickItem(item("desktopScenesAction"));
+        auto *scenesDialog = window->findChild<QObject *>("scenesDialog");
+        QVERIFY(scenesDialog);
+        QTRY_VERIFY(scenesDialog->property("opened").toBool());
+        auto *sceneNameField = item("sceneNameField");
+        auto *captureScene = item("captureSceneAction");
+        QVERIFY(sceneNameField && captureScene);
+        sceneNameField->setProperty("text", "UI scene");
+        clickItem(captureScene);
+        QTRY_COMPARE(backend.property("scenes").toList().size(), 1);
+        auto *sceneRow = item("savedSceneRow");
+        QVERIFY(sceneRow && sceneRow->isVisible());
+        clickItem(sceneRow);
+        auto *scenePreview = item("scenePreviewSummary");
+        QVERIFY(scenePreview);
+        QTRY_VERIFY(scenePreview->property("text").toString().contains("1 open window"));
+        const QString scenesScreenshots = qEnvironmentVariable("WINDOWTUNER_TEST_SCREENSHOTS");
+        if (!scenesScreenshots.isEmpty()) {
+            QDir().mkpath(scenesScreenshots);
+            QVERIFY(window->grabWindow().save(scenesScreenshots + "/scenes-1120x820.png"));
+        }
+        auto *applyScene = item("openSceneAction");
+        QVERIFY(applyScene && applyScene->isEnabled());
+        clickItem(applyScene);
+        auto *applyConfirmation = window->findChild<QObject *>("applySceneConfirmation");
+        QVERIFY(applyConfirmation);
+        QTRY_VERIFY(applyConfirmation->property("opened").toBool());
+        QVERIFY(item("applySceneConfirmationText")->property("text").toString()
+                    .contains("No apps will be launched"));
+        QVERIFY(QMetaObject::invokeMethod(applyConfirmation, "close"));
+        auto *sessionToggle = item("sessionSnapshotsEnabled");
+        QVERIFY(sessionToggle);
+        QCOMPARE(sessionToggle->property("checked").toBool(), false);
+        QVERIFY(QMetaObject::invokeMethod(scenesDialog, "close"));
+        QTRY_VERIFY(!scenesDialog->property("opened").toBool());
+        QTest::qWait(250);
+        auto *manageApps = item("desktopManageAppsAction");
+        QVERIFY(manageApps && manageApps->isVisible());
+        clickItem(manageApps);
+        auto *appSpace = window->findChild<QObject *>("appSpaceDialog");
+        QVERIFY(appSpace);
+        QTRY_VERIFY(appSpace->property("opened").toBool());
+        QVERIFY(QMetaObject::invokeMethod(appSpace, "close"));
+        QTRY_VERIFY(!appSpace->property("opened").toBool());
+        QTest::qWait(250);
+        clickItem(item("windowsNavigation"));
+        QTRY_VERIFY(window->property("windowsPage").toBool());
+        auto *searchScope = item("settingsSearchToggle");
+        QVERIFY(searchScope);
+        QCOMPARE(searchScope->property("text").toString(), QString("Switch to settings"));
+        clickItem(searchScope);
+        QTRY_VERIFY(window->property("settingsSearch").toBool());
+        QCOMPARE(searchScope->property("text").toString(), QString("Switch to windows"));
+        clickItem(searchScope);
+        QTRY_VERIFY(!window->property("settingsSearch").toBool());
+        auto *offlineEntry = item("setupOfflineRuleAction");
+        QVERIFY(offlineEntry && offlineEntry->isVisible());
+        QCOMPARE(offlineEntry->property("text").toString(), QString("Add offline app rule…"));
+        clickItem(offlineEntry);
+        auto *management = window->findChild<QObject *>("managementDialog");
+        QVERIFY(management);
+        QTRY_VERIFY(management->property("opened").toBool());
+        auto *offlineClass = item("offlineClass");
+        QVERIFY(offlineClass && offlineClass->isVisible());
+        QVERIFY(QMetaObject::invokeMethod(management, "close"));
+        QTRY_VERIFY(!management->property("opened").toBool());
+        QTest::qWait(250);
         QTRY_VERIFY(item("windowEntry0"));
         auto *entry = item("windowEntry0");
-        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-                          entry->mapToScene(QPointF(entry->width() / 2, entry->height() / 2)).toPoint());
+        QVERIFY(entry->isVisible());
+        window->grabWindow();
+        clickItem(entry);
         QTRY_VERIFY(!window->property("windowsPage").toBool());
         QCOMPARE(backend.selectedIndex(), 0);
         const QList<QSize> sizes{{860, 680}, {1120, 820}, {1440, 900}};
@@ -801,6 +1086,34 @@ private slots:
                 QVERIFY(pos.y() + bar->height() <= window->height());
                 QVERIFY(pos.x() + bar->width() <= window->width());
             }
+            navigate(-2);
+            QVERIFY(item("desktopsPage")->isVisible());
+            auto *monitorCard = item("desktopMonitorCard0");
+            QVERIFY(monitorCard && monitorCard->isVisible());
+            QVERIFY(item("desktopWorkspace0-1")->isVisible());
+            const QPointF monitorPosition = monitorCard->mapToScene(QPointF());
+            QVERIFY(monitorPosition.x() + monitorCard->width() <= window->width());
+            const auto screenshots = qEnvironmentVariable("WINDOWTUNER_TEST_SCREENSHOTS");
+            if (!screenshots.isEmpty() && size == QSize(860, 680)) {
+                QDir().mkpath(screenshots);
+                QVERIFY(window->grabWindow().save(screenshots + "/desktops-860x680.png"));
+            }
+            clickItem(item("desktopScenesAction"));
+            auto *scenesPopup = window->findChild<QObject *>("scenesDialog");
+            QVERIFY(scenesPopup);
+            QTRY_VERIFY(scenesPopup->property("opened").toBool());
+            QVERIFY(scenesPopup->property("width").toDouble() <= window->width());
+            QVERIFY(scenesPopup->property("height").toDouble() <= window->height());
+            auto *scenesScroll = item("scenesScroll");
+            QVERIFY(scenesScroll);
+            QVERIFY(scenesScroll->property("contentWidth").toDouble()
+                    <= scenesScroll->property("availableWidth").toDouble() + 1);
+            if (!screenshots.isEmpty() && size == QSize(860, 680))
+                QVERIFY(window->grabWindow().save(screenshots + "/scenes-860x680.png"));
+            QVERIFY(QMetaObject::invokeMethod(scenesPopup, "close"));
+            QTRY_VERIFY(!scenesPopup->property("opened").toBool());
+            QTest::qWait(250);
+            navigate(0);
         }
         // Every settings module has distinct, nonempty help, not just the
         // first card on each page. Verify the actual hover and focus behavior.
