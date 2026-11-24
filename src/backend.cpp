@@ -214,23 +214,23 @@ QVariantList Backend::parseClients(const QByteArray &json, QString *error)
     return result;
 }
 
-void Backend::refreshWindows()
+bool Backend::refreshWindows()
 {
     if (m_hyprctl.isEmpty()) {
         setStatus("hyprctl was not found. Run this app inside a Hyprland session.");
-        return;
+        return false;
     }
     QProcess process;
     process.start(m_hyprctl, {"-j", "clients"});
     if (!process.waitForStarted(1500) || !process.waitForFinished(3000) || process.exitCode() != 0) {
         setStatus("Could not query Hyprland windows: " + QString::fromLocal8Bit(process.readAllStandardError()).trimmed());
-        return;
+        return false;
     }
     QString error;
     QVariantList clients = parseClients(process.readAllStandardOutput(), &error);
     if (!error.isEmpty()) {
         setStatus("Hyprland returned invalid window data: " + error);
-        return;
+        return false;
     }
     // Add readable monitor identities without asking the UI to issue another query.
     m_monitors.clear();
@@ -260,11 +260,13 @@ void Backend::refreshWindows()
     for (int i = 0; i < clients.size(); ++i)
         if (clients.at(i).toMap().value("address").toString() == selectedAddress) { m_selectedIndex = i; break; }
     if (m_selectedIndex < 0 && !clients.isEmpty() && m_offlineTarget.isEmpty()) m_selectedIndex = 0;
+    observeGeometryChanges();
     emit windowsChanged();
     emit selectedChanged();
     if (!m_hasRefreshed || previousCount != clients.size())
         setStatus(QString("Found %1 open window(s). Choose one to make a rule for it.").arg(clients.size()));
     m_hasRefreshed = true;
+    return true;
 }
 
 bool Backend::pickWindowAt(int x, int y)
@@ -578,7 +580,9 @@ bool Backend::readRuleData(QJsonArray *rules, QString *error) const
     return true;
 }
 
-bool Backend::commitRuleData(const QJsonArray &rules, bool ensureInclude, bool recordHistory)
+bool Backend::commitRuleData(const QJsonArray &rules, bool ensureInclude, bool recordHistory,
+                             const QJsonObject *workspaceOverride, const QJsonObject *monitorOverride,
+                             const QJsonObject *migrationLibrary)
 {
     QDir().mkpath(m_configDirectory);
     QLockFile lock(m_configDirectory + "/windowtuner.lock");
@@ -610,7 +614,7 @@ bool Backend::commitRuleData(const QJsonArray &rules, bool ensureInclude, bool r
     if (baselineProcess.waitForStarted(1000) && baselineProcess.waitForFinished(2500) &&
         baselineProcess.exitCode() == 0)
         errorBaseline = QString::fromLocal8Bit(baselineProcess.readAllStandardOutput()).trimmed();
-    const QJsonObject before = snapshot(tr("Before rule change"));
+    const auto before = snapshot(tr("Before rule change"), migrationLibrary != nullptr);
     const auto readBytes = [](const QString &path, bool *exists) {
         QFile file(path);
         *exists = file.exists();
@@ -621,7 +625,19 @@ bool Backend::commitRuleData(const QJsonArray &rules, bool ensureInclude, bool r
     const QByteArray oldData = readBytes(dataPath, &hadData);
     const QByteArray oldModule = readBytes(m_rulePath, &hadModule);
     const QByteArray oldConfig = readBytes(m_hyprlandConfig, &hadConfig);
+    const QJsonObject previousLibrary = m_library;
+    bool libraryChangedByCommit = false;
+    if ((migrationLibrary && *migrationLibrary != m_library) ||
+        (workspaceOverride && *workspaceOverride != workspaceData()) ||
+        (monitorOverride && *monitorOverride != monitorData())) {
+        auto library = migrationLibrary ? *migrationLibrary : m_library;
+        if (workspaceOverride) library.insert("workspaces", *workspaceOverride);
+        if (monitorOverride) library.insert("monitors", *monitorOverride);
+        if (!writeLibrary(library)) return false;
+        libraryChangedByCommit = true;
+    }
     const auto restore = [&]() {
+        if (libraryChangedByCommit) writeLibrary(previousLibrary);
         QString ignored;
         if (hadData) writeAtomically(dataPath, oldData, &ignored); else QFile::remove(dataPath);
         if (hadModule) writeAtomically(m_rulePath, oldModule, &ignored); else QFile::remove(m_rulePath);
@@ -679,6 +695,10 @@ bool Backend::commitRuleData(const QJsonArray &rules, bool ensureInclude, bool r
         }
     }
     emit safetyChanged();
+    if (libraryChangedByCommit) {
+        emit workspacePlanChanged();
+        emit catalogChanged();
+    }
     m_lastSuccessfulSave = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     emit healthChanged();
     return true;
@@ -847,6 +867,7 @@ bool Backend::applySavedRule(int index)
     QVariantMap settings = resolvePlacement(rule.value("settings").toMap());
     settings.insert("match", rule.value("match"));
     if (!validateSettings(settings).isEmpty()) { setStatus(validateSettings(settings).join("\n")); return false; }
+    resetGeometryObservations();
     int applied = 0;
     for (const QVariant &entry : m_windows) {
         const QVariantMap window = entry.toMap();
@@ -958,6 +979,8 @@ bool Backend::writeRuleData(const QJsonArray &rules)
 
 void Backend::updateSavedRules(const QJsonArray &rules)
 {
+    resetGeometryObservations();
+    m_dismissedGeometryRules.clear();
     QVariantList result;
     for (const QJsonValue &value : rules) {
         QVariantMap rule = value.toObject().toVariantMap();

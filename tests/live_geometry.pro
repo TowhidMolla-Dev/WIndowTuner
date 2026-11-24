@@ -8,3 +8,5 @@ SOURCES += live_geometry.cpp ../src/backend.cpp ../src/safety.cpp ../src/placeme
            ../src/inspector.cpp ../src/workflows.cpp ../src/management.cpp ../src/appspace.cpp \
            ../src/health.cpp
 RESOURCES += ../src/resources.qrc
+SOURCES += ../src/migration.cpp
+LIBS += -lcrypto

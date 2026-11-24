@@ -55,7 +55,7 @@ QByteArray Backend::fingerprint() const
     return hash.result();
 }
 
-QJsonObject Backend::snapshot(const QString &name) const
+QJsonObject Backend::snapshot(const QString &name, bool includeMigrationLibrary) const
 {
     QJsonObject state{{"id", QUuid::createUuid().toString(QUuid::WithoutBraces)},
                       {"name", name.left(120)}, {"date", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
@@ -65,6 +65,11 @@ QJsonObject Backend::snapshot(const QString &name) const
     for (int i = 0; i < paths.size(); ++i) {
         state.insert(keys[i], QString::fromLatin1(bytes(paths[i]).toBase64()));
         state.insert(keys[i] + "Exists", QFile::exists(paths[i]));
+    }
+    state.insert("workspaces", workspaceData());
+    if (includeMigrationLibrary) {
+        state.insert("migrationProfiles", m_library.value("profiles").toArray());
+        state.insert("migrationScenes", m_library.value("scenes").toArray());
     }
     return state;
 }
@@ -138,11 +143,17 @@ bool Backend::restoreSnapshot(const QJsonObject &state)
         if (!decoded) { setStatus(tr("Snapshot is corrupt. No files were changed.")); return false; }
     }
     if (trialActive() && !revertTrial()) return false;
-    const auto current = snapshot(tr("Before restore"));
+    const auto current = snapshot(tr("Before restore"), state.contains("migrationProfiles"));
     const QStringList paths{m_configDirectory + "/windowtuner.json", m_rulePath, m_hyprlandConfig};
     const QStringList keys{"data", "module", "config"};
     const auto write = [&](const QJsonObject &snapshot) {
         bool ok = true;
+        auto library = m_library;
+        if (snapshot.value("workspaces").isObject() && snapshot.value("workspaces").toObject() != workspaceData())
+            library.insert("workspaces", snapshot.value("workspaces"));
+        if (snapshot.value("migrationProfiles").isArray()) library.insert("profiles", snapshot.value("migrationProfiles"));
+        if (snapshot.value("migrationScenes").isArray()) library.insert("scenes", snapshot.value("migrationScenes"));
+        if (library != m_library && !writeLibrary(library)) return false;
         for (int i = 0; i < paths.size(); ++i) {
             if (snapshot.value(keys[i] + "Exists").toBool())
                 ok = atomic(paths[i], QByteArray::fromBase64(snapshot.value(keys[i]).toString().toLatin1())) && ok;
@@ -165,13 +176,15 @@ bool Backend::restoreSnapshot(const QJsonObject &state)
     QString error;
     if (!readRuleData(&rules, &error)) { setStatus(error); return false; }
     updateSavedRules(rules);
+    emit workspacePlanChanged();
+    emit catalogChanged();
     return true;
 }
 
 bool Backend::undo()
 {
     if (m_past.isEmpty()) return false;
-    const auto current = snapshot(tr("Redo rule change"));
+    const auto current = snapshot(tr("Redo rule change"), m_past.last().toObject().contains("migrationProfiles"));
     if (!restoreSnapshot(m_past.last().toObject())) return false;
     m_past.removeLast();
     m_future.append(current);
@@ -184,7 +197,7 @@ bool Backend::undo()
 bool Backend::redo()
 {
     if (m_future.isEmpty()) return false;
-    const auto current = snapshot(tr("Before redone change"));
+    const auto current = snapshot(tr("Before redone change"), m_future.last().toObject().contains("migrationProfiles"));
     if (!restoreSnapshot(m_future.last().toObject())) return false;
     m_future.removeLast();
     m_past.append(current);
@@ -423,6 +436,7 @@ bool Backend::tryGeometry(const QVariantMap &settings, int seconds)
     // workspace changes are deliberately excluded because their old overrides
     // cannot be reconstructed reliably from clients JSON.
     m_trialWindow = window;
+    resetGeometryObservations();
     QVariantMap geometry;
     for (const auto &key : {"layout", "width", "height", "center", "setPosition", "x", "y"})
         if (settings.contains(key)) geometry.insert(key, settings.value(key));
@@ -451,6 +465,7 @@ bool Backend::revertTrial()
     }
     m_trialTimer.stop();
     m_trialWindow.clear();
+    resetGeometryObservations();
     emit safetyChanged();
     setStatus(tr("Original layout and geometry restored."));
     return true;

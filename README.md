@@ -42,7 +42,7 @@ Check the adjacent `.sha256` file if you want to verify the download.
 - A Hyprland configuration entry point written in Lua and using Hyprland's Lua
   API. WindowTuner does not generate legacy `.conf` rules.
 - To build from source: Qt 6 development packages (Quick, QML, Quick Controls),
-  `qmake6`, a C++17 compiler, and `make`.
+  `qmake6`, a C++17 compiler, `make`, and OpenSSL development headers.
 
 ### Build and install from source
 
@@ -74,19 +74,52 @@ installed Hyprland parser accepts the generated configuration.
 
 ---
 
+## See it before you save
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/windowtuner-control.png" alt="Window rule editor with live layout preview" width="100%">
+      <strong>Live preview</strong><br>
+      Compare draft geometry and appearance with the selected window.
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/windowtuner-inspector.png" alt="Effective settings inspector showing matching rules" width="100%">
+      <strong>Understand impact</strong><br>
+      Check matching windows, uncertain targets, and rule conflicts.
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/windowtuner-desktops.png" alt="Desktop overview with display and workspace map" width="100%">
+      <strong>Plan your desktop</strong><br>
+      Stage display positions, workspace pins, and scene restores.
+    </td>
+  </tr>
+</table>
+
+---
+
 ## Shape and place windows
 
 Tune floating or tiled behavior, size, position, centering, workspace, opacity,
 borders, rounding, blur, shadow, focus, animations, dimming, VRR, and persistent
 floating size. Use the placement designer for anchors, margins, percentage-based
-sizing, and aspect-ratio locking.
+sizing, and aspect-ratio locking. Numeric controls accept typed values as well
+as step-button adjustments, so large sizes and coordinates take only a few
+keystrokes.
 
 WindowTuner can also help with the rest of the workflow:
 
 - **Find a target:** search open windows by app, title, or workspace, or use the
   on-screen picker.
-- **Know what a rule matches:** inspect the selected window against your draft
-  and saved WindowTuner rules before applying.
+- **Preview impact:** compare draft geometry with the live window, see which
+  open windows match, and inspect installed-app hints on demand. Hints are not
+  treated as verified window classes.
+- **Understand rule conflicts:** inspect rules that match the selected window
+  and compare differing requested values. This is a local estimate; Hyprland's
+  final precedence can differ.
+- **Inspect effective settings:** view observed window properties, matching
+  WindowTuner rules, draft-match results, and available config hints in one
+  place.
 - **Reuse settings:** save presets, organize rules into collections, and
   preview a profile before activating it.
 - **Start from an app:** create an offline target from desktop-entry hints when
@@ -100,6 +133,10 @@ Set floating or tiled layout, size, position, centering, and placement anchors.
 The visual designer previews geometry against a selected display and supports
 percentage sizing and aspect-ratio locking.
 
+Enter exact width, height, X/Y position, min/max size, border, rounding, and
+placement values directly in numeric fields. Step buttons remain available for
+small adjustments.
+
 <p align="center">
   <img src="docs/screenshots/windowtuner-control.png" alt="WindowTuner editor showing layout controls for a selected window" width="49%">
   <img src="docs/screenshots/windowtuner-designer.png" alt="Visual placement designer with a resizable window preview on a monitor" width="49%">
@@ -107,22 +144,80 @@ percentage sizing and aspect-ratio locking.
 
 ### Inspect and organize rules
 
-Check whether a draft matches open windows, inspect the selected window's live
-properties, organize rules into collections, and import or export selected
-rules.
+Check which open windows a draft would affect, review uncertain matches, and
+request installed-app hints when a target is not running. Inspect live window
+properties and matching saved rules; compare conflicting requested values
+without claiming to predict Hyprland's final precedence. Organize rules into
+collections, and import or export selected rules.
 
 <p align="center">
   <img src="docs/screenshots/windowtuner-inspector.png" alt="Rule inspector comparing a draft against a live window" width="49%">
   <img src="docs/screenshots/windowtuner-management.png" alt="Rule and application management with batch actions" width="49%">
 </p>
 
+### Use the command palette
+
+Press **Ctrl+Shift+K** or choose **Tools → Command palette**. Search for any
+tool, settings section, saved-rule action or configuration change, then use
+the arrow keys and Enter. Select a star to pin a command; pins stay on this
+machine, move to the top, and can be reordered with the arrow buttons on
+each pinned row. Actions that change open windows or saved configuration
+show a confirmation summary first. The palette never launches apps.
+
+### Transfer settings between machines
+
+Use **Tools → Encrypted transfer** to create a passphrase-protected bundle.
+Copy the encrypted text to the destination and select **Preview import**.
+Compare the before and after settings, check unresolved app and display
+references, and explicitly confirm replacement. Bundles include rules,
+profiles, scenes and workspace pins; launch commands, session snapshots,
+preferences and physical display settings stay local. Rule names and title
+matches are part of the encrypted data. Keep the passphrase separate.
+Transfer is manual; WindowTuner does not upload bundles or sync in the background.
+
+### Describe a rule
+
+Select an open window and choose **Tools → Describe a rule**. Try
+“open this app floating at 800×600 on workspace 3.” The builder supports
+short English requests for floating or tiled layout, size, centering, and
+numbered workspaces. It shows the exact current class used for the match
+and rejects unsupported wording. Open the result as an editable draft,
+then use the usual preview and save review.
+
+### Discover an app’s class
+
+Open the app normally, then choose **Tools → Discover app class**. Select its
+window to see the current and initial classes Hyprland reports. You can compare
+them with an installed desktop entry’s unverified hint, then test an exact
+draft match against open windows without changing the editor or saved rules.
+
+### Remember geometry changes
+
+Enable **Suggest rule updates after geometry changes** in Tools to receive a
+dismissible suggestion after WindowTuner observes repeated size or position
+changes away from a single matching floating-window rule. **Open as draft**
+stages the suggested values; the normal save review still applies. Suggestions
+are off by default and only run while WindowTuner is open.
+
+### Build a reusable context
+
+Save profiles containing WindowTuner rules and workspace pins. Before switching,
+review the exact changes; applying a profile does not change physical monitor
+layout or launch applications. Use **Ctrl+Shift+P** for quick profile switching.
+Presets remain available for reusing one rule's settings.
+
 ### Map desktops and restore scenes
 
-The Desktops overview shows connected displays, active workspaces, open apps,
-and placement rules without moving anything. Saved scenes capture app classes
-and relative window geometry. Optional session snapshots are off by default;
+The Desktops overview maps connected displays by their logical positions and
+shows active workspaces and open apps. Use each display’s position controls to
+stage a layout; overlapping previews are blocked, and Apply starts
+a timed keep/revert trial. Drag a workspace card onto a display (or select the
+card to choose a display) to preview its pin. Saving a pin doesn't immediately
+move open windows. Saved scenes
+capture app classes and relative window geometry. Optional session snapshots are off by default;
 when enabled, they are debounced, retained locally, and restored only after
-preview and confirmation. Neither workflow launches missing apps.
+preview and confirmation. Scene rehearsal starts with every window unchecked;
+select only windows you want to restore. Neither workflow launches missing apps.
 
 <p align="center">
   <img src="docs/screenshots/windowtuner-desktops.png" alt="Desktops overview showing a monitor, active workspace, and open window" width="49%">
@@ -132,8 +227,10 @@ preview and confirmation. Neither workflow launches missing apps.
 ### Apps, workspaces, and displays
 
 The **Desktops** page in the main window shows connected monitors and workspaces,
-including open windows, active workspaces, and saved placement rules. The
-overview is read-only. **Saved scenes** can capture the active desktop, preview
+including open windows, active workspaces, and saved placement rules. Use the
+accessible position controls to preview their relative layout; explicit Apply starts a timed keep/revert trial, while
+Cancel discards an unapplied preview. Workspace pins can be planned separately
+without immediately moving windows. **Saved scenes** can capture the active desktop, preview
 which saved app classes are currently open, and—after confirmation—restore the
 matching windows' workspace and layout. Missing apps are reported, not
 launched. Scene files store app classes and relative geometry, not window
@@ -219,6 +316,8 @@ audit, especially before using unfamiliar properties.
 | --- | --- |
 | `Alt+1`–`Alt+5` | Switch between editor sections |
 | `Ctrl+F` or `Ctrl+K` | Focus search |
+| `Ctrl+Shift+K` | Open the command palette |
+| `Ctrl+Shift+P` | Switch context profile |
 | `Ctrl+R` | Refresh open windows |
 | `Ctrl+S` | Review a new rule or update |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo when the draft is clean |

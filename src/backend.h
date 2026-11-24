@@ -7,6 +7,7 @@
 #include <QLocalSocket>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QSet>
 
 class Backend : public QObject {
     Q_OBJECT
@@ -15,11 +16,15 @@ class Backend : public QObject {
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QString rulePath READ rulePath CONSTANT)
     Q_PROPERTY(QVariantList savedRules READ savedRules NOTIFY savedRulesChanged)
+    Q_PROPERTY(bool geometrySuggestionsEnabled READ geometrySuggestionsEnabled NOTIFY libraryChanged)
+    Q_PROPERTY(QVariantMap geometrySuggestion READ geometrySuggestion NOTIFY geometrySuggestionChanged)
     Q_PROPERTY(QVariantMap selectedWindow READ selectedWindow NOTIFY selectedChanged)
     Q_PROPERTY(QVariantList history READ history NOTIFY safetyChanged)
     Q_PROPERTY(QVariantList backups READ backups NOTIFY safetyChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY safetyChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY safetyChanged)
+    Q_PROPERTY(QString undoSummary READ undoSummary NOTIFY safetyChanged)
+    Q_PROPERTY(QString redoSummary READ redoSummary NOTIFY safetyChanged)
     Q_PROPERTY(bool trialActive READ trialActive NOTIFY safetyChanged)
     Q_PROPERTY(QVariantList monitors READ monitors NOTIFY windowsChanged)
     Q_PROPERTY(QVariantList presets READ presets NOTIFY libraryChanged)
@@ -46,9 +51,13 @@ public:
     QString status() const { return m_status; }
     QString rulePath() const { return m_rulePath; }
     QVariantList savedRules() const { return m_savedRules; }
+    bool geometrySuggestionsEnabled() const;
+    QVariantMap geometrySuggestion() const { return m_geometrySuggestion; }
+    Q_INVOKABLE bool setGeometrySuggestionsEnabled(bool enabled);
+    Q_INVOKABLE void dismissGeometrySuggestion();
     QVariantMap selectedWindow() const { return !m_offlineTarget.isEmpty() ? m_offlineTarget : m_selectedIndex >= 0 && m_selectedIndex < m_windows.size() ? m_windows.at(m_selectedIndex).toMap() : QVariantMap{}; }
 
-    Q_INVOKABLE void refreshWindows();
+    Q_INVOKABLE bool refreshWindows();
     Q_INVOKABLE void selectWindow(int index);
     Q_INVOKABLE bool pickWindowAt(int x, int y);
     Q_INVOKABLE QString previewRule(const QVariantMap &settings) const;
@@ -63,6 +72,9 @@ public:
     Q_INVOKABLE bool applySavedRule(int index);
     Q_INVOKABLE QString exportRules() const;
     Q_INVOKABLE bool importRules(const QString &json);
+    Q_INVOKABLE QVariantMap exportMigration(const QString &passphrase) const;
+    Q_INVOKABLE QVariantMap previewMigration(const QString &bundle, const QString &passphrase) const;
+    Q_INVOKABLE bool applyMigration(const QString &bundle, const QString &passphrase, const QString &token);
     static QString liveApplyCode(const QVariantMap &window, const QVariantMap &settings);
 
     static QVariantList parseClients(const QByteArray &json, QString *error = nullptr);
@@ -72,6 +84,8 @@ public:
     QVariantList backups() const;
     bool canUndo() const { return !m_past.isEmpty(); }
     bool canRedo() const { return !m_future.isEmpty(); }
+    QString undoSummary() const { return m_past.isEmpty() ? QString() : m_past.last().toObject().value("name").toString(); }
+    QString redoSummary() const { return m_future.isEmpty() ? QString() : m_future.last().toObject().value("name").toString(); }
     bool trialActive() const { return !m_trialWindow.isEmpty(); }
     Q_INVOKABLE bool undo();
     Q_INVOKABLE bool redo();
@@ -81,6 +95,7 @@ public:
     Q_INVOKABLE QVariantMap reviewChanges(const QVariantMap &settings, int index = -1) const;
     Q_INVOKABLE QStringList validateSettings(const QVariantMap &settings) const;
     Q_INVOKABLE QVariantMap validationDetails(const QVariantMap &settings) const;
+    Q_INVOKABLE QVariantMap interpretRuleRequest(const QString &request) const;
     Q_INVOKABLE QString summarize(const QVariantMap &settings) const;
     Q_INVOKABLE bool tryGeometry(const QVariantMap &settings, int seconds = 15);
     Q_INVOKABLE bool revertTrial();
@@ -92,6 +107,7 @@ public:
     static QVariantMap matchWindow(const QVariantMap &window, const QVariantMap &settings);
     Q_INVOKABLE QVariantMap testMatch(const QVariantMap &settings) const;
     Q_INVOKABLE QVariantMap simulateRule(const QVariantMap &settings) const;
+    Q_INVOKABLE static QVariantMap simulateAppHints(const QVariantMap &settings, const QVariantList &apps);
     Q_INVOKABLE QVariantMap inspectWindow() const;
     Q_INVOKABLE QVariantList externalRuleHints() const;
     QVariantList presets() const;
@@ -100,6 +116,8 @@ public:
     Q_INVOKABLE QVariantMap presetSettings(const QString &id) const;
     Q_INVOKABLE bool saveProfile(const QString &name);
     Q_INVOKABLE QString profilePreview(const QString &id) const;
+    Q_INVOKABLE QVariantMap reviewProfile(const QString &id) const;
+    Q_INVOKABLE bool applyProfileReview(const QString &id, const QString &token);
     Q_INVOKABLE bool activateProfile(const QString &id);
     Q_INVOKABLE bool removeLibraryItem(const QString &kind, const QString &id);
     Q_INVOKABLE QVariantList installedApplications() const;
@@ -140,6 +158,7 @@ public:
     Q_INVOKABLE bool captureScene(const QString &name);
     Q_INVOKABLE QVariantMap previewScene(const QString &id) const;
     Q_INVOKABLE bool openScene(const QString &id);
+    Q_INVOKABLE bool applyRehearsal(const QString &id, bool session, const QStringList &selection);
     Q_INVOKABLE bool removeScene(const QString &id);
     QVariantList sessionSnapshots() const;
     bool sessionSnapshotsEnabled() const;
@@ -156,6 +175,7 @@ signals:
     void selectedChanged();
     void statusChanged();
     void savedRulesChanged();
+    void geometrySuggestionChanged();
     void safetyChanged();
     void libraryChanged();
     void healthChanged();
@@ -165,8 +185,11 @@ signals:
 
 private:
     void connectHyprlandEvents();
+    void observeGeometryChanges();
+    void resetGeometryObservations();
     void saveSessionSnapshot();
     QVariantMap resolveSessionSnapshot(const QJsonObject &snapshot) const;
+    QVariantMap rehearsalReport(QVariantMap resolved) const;
     bool applyResolvedScene(const QJsonObject &scene, const QVariantMap &resolved);
 
 private slots:
@@ -177,17 +200,22 @@ private:
     bool writeRules(const QJsonArray &rules);
     bool writeRuleData(const QJsonArray &rules);
     bool readRuleData(QJsonArray *rules, QString *error = nullptr) const;
-    bool commitRuleData(const QJsonArray &rules, bool ensureInclude = false, bool recordHistory = true);
+    bool commitRuleData(const QJsonArray &rules, bool ensureInclude = false, bool recordHistory = true,
+                        const QJsonObject *workspaceOverride = nullptr,
+                        const QJsonObject *monitorOverride = nullptr,
+                        const QJsonObject *migrationLibrary = nullptr);
     void updateSavedRules(const QJsonArray &rules);
     bool ensureMainConfigIncludesRules();
     QString moduleInclude() const;
     QByteArray fingerprint() const;
-    QJsonObject snapshot(const QString &name) const;
+    QJsonObject snapshot(const QString &name, bool includeMigrationLibrary = false) const;
     bool restoreSnapshot(const QJsonObject &state);
     bool saveJournal();
     void loadJournal();
     void loadLibrary();
     bool writeLibrary(const QJsonObject &library);
+    QVariantMap prepareMigration(const QString &bundle, const QString &passphrase,
+                                 QJsonObject *prepared) const;
     QVariantMap resolveScene(const QJsonObject &scene) const;
     bool decodeRules(const QString &json, QJsonArray *rules, QString *error) const;
     QJsonObject workspaceData() const;
@@ -205,6 +233,9 @@ private:
     QString m_rulePath;
     QVariantList m_windows;
     QVariantList m_savedRules;
+    QHash<QString, QVariantMap> m_geometryObservations;
+    QSet<QString> m_dismissedGeometryRules;
+    QVariantMap m_geometrySuggestion;
     int m_selectedIndex = -1;
     QString m_status;
     QTimer m_refreshTimer;

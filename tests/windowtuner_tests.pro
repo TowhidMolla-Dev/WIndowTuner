@@ -6,3 +6,5 @@ INCLUDEPATH += ../src
 HEADERS += ../src/backend.h ../src/theme.h
 SOURCES += windowtuner_tests.cpp ../src/backend.cpp ../src/safety.cpp ../src/placement.cpp ../src/inspector.cpp ../src/workflows.cpp ../src/management.cpp ../src/appspace.cpp ../src/health.cpp ../src/theme.cpp
 RESOURCES += ../src/resources.qrc
+SOURCES += ../src/migration.cpp
+LIBS += -lcrypto

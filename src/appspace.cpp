@@ -539,24 +539,7 @@ bool Backend::commitPlacementData(const QJsonObject &workspaces, const QJsonObje
         QString error;
         if (!readRuleData(&effective, &error)) { setStatus(error); return false; }
     }
-    const QJsonObject oldLibrary = m_library;
-    const QByteArray oldBytes = m_libraryBytes;
-    QJsonObject library = m_library;
-    library.insert("workspaces", workspaces);
-    library.insert("monitors", monitors);
-    if (!writeLibrary(library)) return false;
-    if (!commitRuleData(effective, false, keepHistory)) {
-        // commitRuleData restored the rule data and generated module; put the
-        // library back too so its bytes match what Hyprland just loaded.
-        const QString path = m_configDirectory + "/windowtuner-library.json";
-        QSaveFile file(path);
-        if (file.open(QIODevice::WriteOnly) && file.write(oldBytes) == oldBytes.size() && file.commit())
-            QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner);
-        m_library = oldLibrary;
-        m_libraryBytes = oldBytes;
-        emit libraryChanged();
-        return false;
-    }
+    if (!commitRuleData(effective, false, keepHistory, &workspaces, &monitors)) return false;
     emit workspacePlanChanged();
     emit catalogChanged();
     if (!status.isEmpty()) setStatus(status);

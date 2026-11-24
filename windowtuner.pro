@@ -8,3 +8,5 @@ VERSION = 1.0.0
 HEADERS += src/backend.h src/theme.h
 SOURCES += src/main.cpp src/backend.cpp src/safety.cpp src/placement.cpp src/inspector.cpp src/workflows.cpp src/management.cpp src/appspace.cpp src/health.cpp src/theme.cpp
 RESOURCES += src/resources.qrc
+SOURCES += src/migration.cpp
+LIBS += -lcrypto

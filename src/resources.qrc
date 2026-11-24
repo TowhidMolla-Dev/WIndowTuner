@@ -4,10 +4,17 @@
     <file alias="SafetyDialog.qml">SafetyDialog.qml</file>
     <file alias="PlacementDesigner.qml">PlacementDesigner.qml</file>
     <file alias="InspectorDialog.qml">InspectorDialog.qml</file>
+    <file alias="ClassDiscoveryDialog.qml">ClassDiscoveryDialog.qml</file>
+    <file alias="RuleRequestDialog.qml">RuleRequestDialog.qml</file>
+    <file alias="MigrationDialog.qml">MigrationDialog.qml</file>
+    <file alias="CommandPalette.qml">CommandPalette.qml</file>
     <file alias="WorkflowDialog.qml">WorkflowDialog.qml</file>
+    <file alias="ProfileSwitcherDialog.qml">ProfileSwitcherDialog.qml</file>
     <file alias="ManagementDialog.qml">ManagementDialog.qml</file>
     <file alias="AppSpaceDialog.qml">AppSpaceDialog.qml</file>
     <file alias="ScenesDialog.qml">ScenesDialog.qml</file>
+    <file alias="RestoreRehearsal.qml">RestoreRehearsal.qml</file>
+    <file alias="DesktopMap.qml">DesktopMap.qml</file>
     <file alias="HealthDialog.qml">HealthDialog.qml</file>
     <file alias="WelcomeDialog.qml">WelcomeDialog.qml</file>
     <file alias="StudioDialog.qml">StudioDialog.qml</file>

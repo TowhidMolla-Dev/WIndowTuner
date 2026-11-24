@@ -142,14 +142,20 @@ StudioDialog {
                 delegate: Label {
                     required property var modelData
                     Layout.fillWidth: true
-                    text: (modelData.matched ? "✓  " : "—  ") + modelData["class"]
+                    text: modelData.matched
+                        ? qsTr("✓  %1  ·  %2 / workspace %3  →  %4 / workspace %5")
+                            .arg(modelData["class"]).arg(modelData.currentMonitor || qsTr("unknown"))
+                            .arg(modelData.currentWorkspace || "?").arg(modelData.targetMonitor || "")
+                            .arg(modelData.targetWorkspace || "")
+                        : qsTr("—  %1  ·  Missing; will be skipped").arg(modelData["class"])
                     color: modelData.matched ? "#8bd5a5" : "#ffbd72"
+                    wrapMode: Text.WordWrap
                 }
             }
             Button {
                 objectName: "restoreSessionSnapshotAction"
                 Layout.alignment: Qt.AlignRight
-                text: qsTr("Restore snapshot…")
+                text: qsTr("Rehearse snapshot…")
                 enabled: dialog.selectedSnapshotId !== "" &&
                     dialog.snapshotPreview.matched > 0 && !dialog.snapshotPreview.error &&
                     !dialog.host.dirty && !backend.trialActive && !backend.monitorRevertPending
@@ -223,14 +229,14 @@ StudioDialog {
                 }
                 Button {
                     objectName: "openSceneAction"
-                    text: qsTr("Apply to matching windows…")
+                    text: qsTr("Rehearse scene…")
                     enabled: dialog.selectedId !== "" && dialog.preview.matched > 0 &&
                         !dialog.preview.error && !dialog.host.dirty &&
                         !backend.trialActive && !backend.monitorRevertPending
                     onClicked: applyConfirmation.open()
                     background: Rectangle { radius: 7; color: enabled ? theme.accent : "#303941" }
                     contentItem: Label {
-                        text: qsTr("Apply to matching windows…")
+                        text: qsTr("Rehearse scene…")
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
                         color: parent.enabled ? "#111820" : "#87939a"
@@ -240,50 +246,30 @@ StudioDialog {
         }
     }
 
-    Dialog {
+    RestoreRehearsal {
         id: restoreConfirmation
         objectName: "restoreSessionConfirmation"
-        title: qsTr("Restore this session snapshot?")
-        modal: true
-        anchors.centerIn: Overlay.overlay
-        width: Math.min(host.width - 80, 520)
-        standardButtons: Dialog.Yes | Dialog.No
-        contentItem: Label {
-            objectName: "restoreSessionConfirmationText"
-            width: 460
-            wrapMode: Text.WordWrap
-            text: qsTr("This will reposition %1 matching open window(s) across their saved displays and workspaces. %2 missing window(s) will be skipped. No applications will be launched. This cannot be automatically undone.")
-                .arg(dialog.snapshotPreview.matched || 0)
-                .arg(dialog.snapshotPreview.missing || 0)
-        }
-        onAccepted: {
-            backend.restoreSessionSnapshot(dialog.selectedSnapshotId)
+        title: qsTr("Rehearse session restore")
+        host: dialog.host
+        report: dialog.snapshotPreview
+        summaryObjectName: "restoreSessionConfirmationText"
+        onApplySelection: tokens => {
+            backend.applyRehearsal(dialog.selectedSnapshotId, true, tokens)
             dialog.feedback = backend.status
             backend.refreshWindows()
             dialog.snapshotPreview = backend.previewSessionSnapshot(dialog.selectedSnapshotId)
         }
     }
 
-    Dialog {
+    RestoreRehearsal {
         id: applyConfirmation
         objectName: "applySceneConfirmation"
-        title: qsTr("Apply this scene?")
-        modal: true
-        anchors.centerIn: Overlay.overlay
-        width: Math.min(host.width - 80, 520)
-        standardButtons: Dialog.Yes | Dialog.No
-        contentItem: Label {
-            objectName: "applySceneConfirmationText"
-            width: 460
-            wrapMode: Text.WordWrap
-            text: qsTr("This will move %1 matching open window(s) to %2, workspace %3, and restore their saved layout and position. %4 missing window(s) will be skipped. No apps will be launched.")
-                .arg(dialog.preview.matched || 0)
-                .arg(dialog.preview.monitor || "")
-                .arg(dialog.preview.workspace || "")
-                .arg(dialog.preview.missing || 0)
-        }
-        onAccepted: {
-            backend.openScene(dialog.selectedId)
+        title: qsTr("Rehearse scene restore")
+        host: dialog.host
+        report: dialog.preview
+        summaryObjectName: "applySceneConfirmationText"
+        onApplySelection: tokens => {
+            backend.applyRehearsal(dialog.selectedId, false, tokens)
             dialog.feedback = backend.status
             backend.refreshWindows()
             dialog.selectScene(dialog.selectedId)

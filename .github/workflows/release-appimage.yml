@@ -50,6 +50,7 @@ jobs:
             build-essential \
             curl \
             libfuse2 \
+            libssl-dev \
             qt6-base-dev \
             qt6-declarative-dev \
             qt6-declarative-dev-tools \

@@ -154,7 +154,7 @@ StudioDialog {
                     }
                 }
                 Label { text: qsTr("Margin") }
-                SpinBox { from: 0; to: 1000; value: dialog.placement.margin || 0; onValueModified: dialog.change("margin", value) }
+                SpinBox { objectName: "placementMargin"; from: 0; to: 1000; value: dialog.placement.margin || 0; editable: true; onValueModified: dialog.change("margin", value) }
             }
             RowLayout {
                 CheckBox { text: qsTr("Lock aspect ratio"); checked: !!dialog.placement.aspectLock; onToggled: dialog.change("aspectLock", checked) }

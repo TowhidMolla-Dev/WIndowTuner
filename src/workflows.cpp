@@ -1,12 +1,13 @@
 #include "backend.h"
-#include <QDateTime>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLockFile>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
 #include <QUuid>
@@ -198,7 +199,7 @@ QVariantMap Backend::resolveScene(const QJsonObject &scene) const
         }
     }
     if (targetMonitor.isEmpty())
-        return {{"error", tr("The scene’s display is not connected. No windows were changed.")}};
+        return {{"error", tr("The scene’s display is not connected: %1. No windows were changed.").arg(monitorDescription)}};
     if (workspace.isEmpty() || workspace.startsWith("special:"))
         return {{"error", tr("This scene has an invalid workspace. No windows were changed.")}};
 
@@ -249,8 +250,15 @@ QVariantMap Backend::resolveScene(const QJsonObject &scene) const
             ++missing;
             items.append(QVariantMap{{"class", klass}, {"matched", false}});
         } else {
-            matches.append(QVariantMap{{"saved", saved.toVariantMap()}, {"window", match}});
-            items.append(QVariantMap{{"class", klass}, {"matched", true}});
+            const QVariantMap savedMap = saved.toVariantMap();
+            const QVariantMap rect = saved.value("rect").toObject().toVariantMap();
+            matches.append(QVariantMap{{"saved", savedMap}, {"window", match}});
+            items.append(QVariantMap{{"class", klass}, {"matched", true},
+                {"currentMonitor", match.value("monitorName")},
+                {"currentWorkspace", match.value("workspace")},
+                {"targetMonitor", monitorDescription}, {"targetWorkspace", workspace},
+                {"x", rect.value("x")}, {"y", rect.value("y")},
+                {"width", rect.value("width")}, {"height", rect.value("height")}});
         }
     }
     return {{"items", items}, {"matches", matches}, {"matched", matches.size()},
@@ -267,9 +275,7 @@ QVariantMap Backend::previewScene(const QString &id) const
         result.insert("id", id);
         result.insert("name", scene.value("name").toString());
         result.insert("previewOnly", true);
-        result.remove("matches");
-        result.remove("targetMonitor");
-        return result;
+        return rehearsalReport(result);
     }
     return {{"error", tr("Scene not found.")}, {"matched", 0}, {"missing", 0}, {"previewOnly", true}};
 }
@@ -322,6 +328,7 @@ bool Backend::applyResolvedScene(const QJsonObject &scene, const QVariantMap &re
         }
     }
 
+    resetGeometryObservations();
     int applied = 0;
     for (const QVariant &value : matches) {
         const QVariantMap entry = value.toMap();
@@ -554,7 +561,8 @@ QVariantMap Backend::resolveSessionSnapshot(const QJsonObject &snapshot) const
             }
         }
         if (monitor.isEmpty())
-            return {{"error", tr("A display from this snapshot is disconnected. No windows were changed.")}};
+            return {{"error", tr("A display from this snapshot is disconnected: %1. No windows were changed.")
+                .arg(group.value("monitor").toString())}};
         QVariantList candidates;
         for (const QVariant &value : m_windows) {
             const QVariantMap window = value.toMap();
@@ -607,8 +615,7 @@ QVariantMap Backend::previewSessionSnapshot(const QString &id) const
         result.insert("id", id);
         result.insert("createdAt", snapshot.value("createdAt").toString());
         result.insert("previewOnly", true);
-        result.remove("matches");
-        return result;
+        return rehearsalReport(result);
     }
     return {{"error", tr("Session snapshot not found.")}, {"matched", 0}, {"missing", 0}};
 }
@@ -631,6 +638,90 @@ bool Backend::restoreSessionSnapshot(const QString &id)
         return applyResolvedScene(envelope, resolved);
     }
     setStatus(tr("Session snapshot not found."));
+    return false;
+}
+
+namespace {
+QString rehearsalToken(const QVariantMap &entry, const QVariantMap &resolved)
+{
+    const auto window = entry.value("window").toMap();
+    const auto monitor = entry.value("monitor", resolved.value("targetMonitor")).toMap();
+    const QVariantMap identity{{"address", window.value("address")}, {"pid", window.value("pid")},
+        {"class", window.value("class")}, {"monitor", window.value("monitor")},
+        {"workspace", window.value("workspace")}, {"at", window.value("at")},
+        {"size", window.value("size")}, {"floating", window.value("floating")}};
+    const QVariantMap target{{"name", monitor.value("name")}, {"description", monitor.value("description")},
+        {"x", monitor.value("x")}, {"y", monitor.value("y")},
+        {"width", monitor.value("width")}, {"height", monitor.value("height")}};
+    const auto bytes = QJsonDocument::fromVariant(QVariantList{identity, target, entry.value("saved"),
+        entry.value("workspace", resolved.value("workspace"))}).toJson(QJsonDocument::Compact);
+    return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+}
+}
+
+QVariantMap Backend::rehearsalReport(QVariantMap resolved) const
+{
+    const auto matches = resolved.take("matches").toList();
+    auto items = resolved.value("items").toList();
+    int index = 0;
+    for (auto &value : items) {
+        auto row = value.toMap();
+        if (!row.value("matched").toBool()) continue;
+        const auto entry = matches.at(index++).toMap();
+        const auto window = entry.value("window").toMap();
+        const auto saved = entry.value("saved").toMap();
+        const auto at = window.value("at").toList(), size = window.value("size").toList();
+        for (const auto &display : m_monitors) {
+            const auto monitor = display.toMap();
+            if (monitor.value("id") != window.value("monitor") || at.size() != 2 || size.size() != 2) continue;
+            const double width = monitor.value("width").toDouble(), height = monitor.value("height").toDouble();
+            if (width <= 0 || height <= 0) continue;
+            row.insert("before", QVariantMap{{"x", (at[0].toDouble() - monitor.value("x").toDouble()) / width},
+                {"y", (at[1].toDouble() - monitor.value("y").toDouble()) / height},
+                {"width", size[0].toDouble() / width}, {"height", size[1].toDouble() / height}});
+            break;
+        }
+        row.insert("after", saved.value("rect"));
+        row.insert("floating", saved.value("floating"));
+        row.insert("currentMonitor", window.value("monitorName", tr("Unknown display")));
+        row.insert("currentWorkspace", window.value("workspace"));
+        row.insert("targetMonitor", entry.value("monitorDescription", resolved.value("monitor")));
+        row.insert("targetWorkspace", entry.value("workspace", resolved.value("workspace")));
+        row.insert("token", rehearsalToken(entry, resolved));
+        value = row;
+    }
+    resolved.remove("targetMonitor");
+    resolved.insert("items", items);
+    resolved.insert("otherWindows", m_windows.size() - matches.size());
+    return resolved;
+}
+
+bool Backend::applyRehearsal(const QString &id, bool session, const QStringList &selection)
+{
+    if (selection.isEmpty() || trialActive() || m_monitorRevertPending) {
+        setStatus(tr("Select windows and finish any active trial before applying."));
+        return false;
+    }
+    if (!refreshWindows()) return false;
+    for (const auto &value : m_library.value(session ? "sessionSnapshots" : "scenes").toArray()) {
+        const auto record = value.toObject();
+        if (record.value("id").toString() != id) continue;
+        auto resolved = session ? resolveSessionSnapshot(record) : resolveScene(record);
+        if (resolved.contains("error")) {
+            setStatus(resolved.value("error").toString());
+            return false;
+        }
+        QVariantList selected;
+        for (const auto &entry : resolved.value("matches").toList())
+            if (selection.contains(rehearsalToken(entry.toMap(), resolved))) selected.append(entry);
+        if (selected.size() != selection.size()) {
+            setStatus(tr("The window layout changed after preview. Review it again. Nothing was moved."));
+            return false;
+        }
+        resolved.insert("matches", selected);
+        return applyResolvedScene(session ? QJsonObject{} : record, resolved);
+    }
+    setStatus(tr("The saved layout is no longer available."));
     return false;
 }
 
@@ -696,7 +787,7 @@ bool Backend::saveProfile(const QString &name)
     QJsonArray rules; QString error;
     if (!readRuleData(&rules, &error)) { setStatus(error); return false; }
     profiles.append(QJsonObject{{"id", QUuid::createUuid().toString(QUuid::WithoutBraces)},
-        {"name", name.trimmed().left(120)}, {"rules", rules}});
+        {"name", name.trimmed().left(120)}, {"rules", rules}, {"workspaces", workspaceData()}});
     auto library = m_library; library.insert("profiles", profiles);
     if (!writeLibrary(library)) return false;
     setStatus(tr("Profile saved. Switching is manual; no automatic desktop changes are scheduled."));
@@ -713,11 +804,101 @@ QString Backend::profilePreview(const QString &id) const
 
 bool Backend::activateProfile(const QString &id)
 {
-    const auto preview = profilePreview(id);
-    if (preview.isEmpty()) { setStatus(tr("Profile not found.")); return false; }
-    if (!importRules(preview)) return false;
-    setStatus(tr("Profile activated and validated. Undo is available; reopen windows for creation-time effects."));
-    return true;
+    return applyProfileReview(id, reviewProfile(id).value("token").toString());
+}
+
+namespace {
+QString profileValue(const QJsonValue &value)
+{
+    if (value.isUndefined()) return QObject::tr("(not set)");
+    const auto json = QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact);
+    return QString::fromUtf8(json.mid(1, json.size() - 2));
+}
+
+void profileDiff(const QString &path, const QJsonValue &before, const QJsonValue &after, QStringList &lines)
+{
+    if (before == after) return;
+    if (before.isObject() && after.isObject()) {
+        const auto left = before.toObject(), right = after.toObject();
+        auto keys = left.keys() + right.keys();
+        keys.removeDuplicates();
+        keys.sort();
+        for (const auto &key : keys)
+            profileDiff(path + " / " + key, left.value(key), right.value(key), lines);
+    } else {
+        lines.append(QString("%1: %2 → %3").arg(path, profileValue(before), profileValue(after)));
+    }
+}
+}
+
+QVariantMap Backend::reviewProfile(const QString &id) const
+{
+    QJsonArray current;
+    QString error;
+    if (!readRuleData(&current, &error)) return {{"error", error}};
+    for (const auto &value : m_library.value("profiles").toArray()) {
+        const auto profile = value.toObject();
+        if (profile.value("id").toString() != id) continue;
+        if (!profile.value("rules").isArray() || (profile.contains("workspaces") && !profile.value("workspaces").isObject()))
+            return {{"error", tr("The profile contains invalid data.")}};
+        const auto proposed = profile.value("rules").toArray();
+        const auto currentPins = workspaceData();
+        const bool hasPins = profile.contains("workspaces");
+        const auto proposedPins = hasPins ? profile.value("workspaces").toObject() : currentPins;
+        for (auto it = proposedPins.begin(); it != proposedPins.end(); ++it) {
+            const auto pin = it.value().toObject();
+            const int slot = it.key().toInt();
+            if (slot < 1 || slot > 10 || QString::number(slot) != it.key() ||
+                !it.value().isObject() || !pin.value("monitor").isString() || !pin.value("persistent").isBool())
+                return {{"error", tr("The profile contains an invalid workspace assignment.")}};
+        }
+        QStringList rules, pins;
+        for (int i = 0; i < qMax(current.size(), proposed.size()); ++i)
+            profileDiff(tr("Rule #%1").arg(i + 1), current.at(i), proposed.at(i), rules);
+        for (int i = 1; i <= 10; ++i) {
+            const auto key = QString::number(i);
+            profileDiff(tr("Workspace %1").arg(i), currentPins.value(key), proposedPins.value(key), pins);
+        }
+        const auto bytes = QJsonDocument(QJsonArray{profile, current, currentPins, monitorData(),
+            QString::fromLatin1(fingerprint().toHex())}).toJson(QJsonDocument::Compact);
+        const auto token = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        const auto text = tr("Saved rules (in saved order)\n%1\n\nWorkspace → display assignments\n%2\n\nPhysical display layout is not part of a profile.")
+            .arg(rules.isEmpty() ? tr("No rule changes.") : rules.join("\n"),
+                 !hasPins ? tr("This older profile has no workspace plan; current pins stay unchanged.")
+                          : pins.isEmpty() ? tr("No workspace changes.") : pins.join("\n"));
+        return {{"token", token}, {"text", text}, {"changed", !rules.isEmpty() || !pins.isEmpty()}};
+    }
+    return {{"error", tr("Profile not found.")}};
+}
+
+bool Backend::applyProfileReview(const QString &id, const QString &token)
+{
+    if (trialActive() || m_monitorRevertPending) {
+        setStatus(tr("Finish any active layout trial before switching profiles."));
+        return false;
+    }
+    const auto review = reviewProfile(id);
+    if (token.isEmpty() || review.value("token").toString() != token) {
+        setStatus(review.value("error", tr("Configuration changed since the preview. Review the profile again.")).toString());
+        return false;
+    }
+    if (!review.value("changed").toBool()) return true;
+    for (const auto &entry : m_library.value("profiles").toArray()) {
+        const auto profile = entry.toObject();
+        if (profile.value("id").toString() != id) continue;
+        const auto rules = profile.value("rules").toArray();
+        QJsonArray checked;
+        QString error;
+        if (!decodeRules(QString::fromUtf8(QJsonDocument(rules).toJson()), &checked, &error)) {
+            setStatus(error);
+            return false;
+        }
+        const auto pins = profile.value("workspaces").toObject();
+        if (!commitRuleData(rules, true, true, profile.contains("workspaces") ? &pins : nullptr)) return false;
+        setStatus(tr("Profile activated. Undo is available; reopen windows for creation-time effects."));
+        return true;
+    }
+    return false;
 }
 
 bool Backend::removeLibraryItem(const QString &kind, const QString &id)
@@ -742,10 +923,23 @@ QVariant Backend::preference(const QString &key, const QVariant &fallback) const
 
 bool Backend::setPreference(const QString &key, const QVariant &value)
 {
-    if (key != "onboarded" && key != "advanced" && key != "textScale") return false;
+    if (key != "onboarded" && key != "advanced" && key != "textScale" && key != "pinnedCommands")
+        return false;
     if (key == "textScale" && (value.toDouble() < 0.85 || value.toDouble() > 1.4)) return false;
     auto prefs = m_library.value("preferences").toObject();
-    prefs.insert(key, QJsonValue::fromVariant(value));
+    if (key == "pinnedCommands") {
+        const auto commands = value.toStringList();
+        if (commands.size() > 24) return false;
+        QSet<QString> unique;
+        for (const auto &command : commands) {
+            if (!QRegularExpression("^[a-z][a-zA-Z0-9.-]{0,79}$").match(command).hasMatch() ||
+                unique.contains(command)) return false;
+            unique.insert(command);
+        }
+        prefs.insert(key, QJsonArray::fromStringList(commands));
+    } else {
+        prefs.insert(key, QJsonValue::fromVariant(value));
+    }
     auto library = m_library; library.insert("preferences", prefs);
     return writeLibrary(library);
 }

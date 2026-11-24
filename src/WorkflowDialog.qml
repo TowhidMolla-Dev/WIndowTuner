@@ -23,7 +23,7 @@ StudioDialog {
         clip: true
         ColumnLayout {
             width: scroller.availableWidth; spacing: 12
-            Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: qsTr("Presets copy settings into your draft without changing its target. Profiles replace the active saved-rule collection after confirmation. They do not launch applications or run automatically.") }
+            Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: qsTr("Presets copy settings into your draft. Profiles save rules and workspace pins and apply them only after confirmation. Physical display settings stay unchanged.") }
             Label { visible: dialog.host.dirty; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#ffb778"; text: qsTr("Save or discard your current draft before activating a profile.") }
             RowLayout {
                 Layout.fillWidth: true
@@ -44,7 +44,7 @@ StudioDialog {
             RowLayout {
                 Layout.fillWidth: true
                 TextField { id: profileName; Layout.fillWidth: true; placeholderText: qsTr("Work, Gaming, Presentation…"); Accessible.name: qsTr("Profile name") }
-                Button { text: qsTr("Save current rules"); onClicked: backend.saveProfile(profileName.text) }
+                Button { text: qsTr("Save rules and pins"); onClicked: backend.saveProfile(profileName.text) }
             }
             Repeater {
                 model: backend.profiles
@@ -52,7 +52,7 @@ StudioDialog {
                     required property var modelData
                     Layout.fillWidth: true
                     Label { Layout.fillWidth: true; text: modelData.name + " · " + modelData.count; elide: Text.ElideRight }
-                    Button { text: qsTr("Preview and activate…"); enabled: !dialog.host.dirty; onClicked: { profileConfirm.profileId = modelData.id; profileConfirm.preview = backend.profilePreview(modelData.id); profileConfirm.open() } }
+                    Button { text: qsTr("Preview and activate…"); enabled: !dialog.host.dirty; onClicked: { profileConfirm.profileId = modelData.id; profileConfirm.review = backend.reviewProfile(modelData.id); profileConfirm.open() } }
                     Button { text: qsTr("Remove…"); onClicked: { removeConfirm.kind = "profiles"; removeConfirm.itemId = modelData.id; removeConfirm.open() } }
                 }
             }
@@ -62,15 +62,17 @@ StudioDialog {
     StudioDialog {
         id: profileConfirm
         property string profileId
-        property string preview
+        property var review: ({})
         anchors.centerIn: parent
         width: Math.min(dialog.width - 30, 650)
         height: Math.min(dialog.height - 30, 500)
         modal: true
-        title: qsTr("Replace active rules with this profile?")
+        title: qsTr("Apply profile changes?")
         standardButtons: Dialog.Ok | Dialog.Cancel
-        contentItem: ScrollView { clip: true; TextArea { readOnly: true; selectByMouse: true; wrapMode: TextEdit.WrapAnywhere; text: profileConfirm.preview } }
-        onAccepted: backend.activateProfile(profileId)
+        contentItem: ScrollView { clip: true; TextArea { readOnly: true; selectByMouse: true; wrapMode: TextEdit.WrapAnywhere; text: profileConfirm.review.error || profileConfirm.review.text || "" } }
+        onOpened: standardButton(Dialog.Ok).enabled = !!review.changed && !dialog.host.dirty
+            && !backend.trialActive && !backend.monitorRevertPending
+        onAccepted: if (!dialog.host.dirty) backend.applyProfileReview(profileId, review.token || "")
     }
     StudioDialog {
         id: removeConfirm

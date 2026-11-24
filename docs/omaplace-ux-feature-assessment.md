@@ -85,9 +85,9 @@ The existing architecture and capabilities make this technically plausible, but 
 
 ## Implementation status
 
-On 2026-11-24, the **Desktops** overview and the first named-scene workflow were implemented:
+On 2026-11-24, the **Desktops** overview, spatial display map, and named-scene workflow were implemented:
 
-- The overview summarizes connected monitors, active workspaces, open windows, and saved placement-rule classes. The overview itself is read-only.
+- The display map places monitor tiles by their logical desktop coordinates, including negative positions and vertical offsets. Accessible 100-logical-pixel position controls change only a local preview; overlapping layouts cannot be applied. Apply starts the existing timed keep/revert trial, while Cancel discards an unapplied preview. Workspace pins remain an explicit, separate plan action.
 - Users can capture the active monitor/workspace, preview exact-class matches, then explicitly confirm applying saved workspace and geometry to matching open windows.
 - Scene storage omits titles and window addresses. Missing apps are reported and never launched. Same-class windows are paired in spatial order; scenes require their saved monitor description to be connected.
 - Scene removal has a confirmation step. Application is blocked while a geometry/display recovery trial is active, rechecks matches when Apply is pressed, validates all saved geometry before the first side effect, and reports partial failures.

@@ -200,6 +200,12 @@ ApplicationWindow {
         case "safety": safetyDialog.open(); break
         case "placement": placementDesigner.open(); break
         case "inspect": inspectorDialog.open(); break
+        case "discoverClass": classDiscoveryDialog.open(); break
+        case "describeRule": ruleRequestDialog.open(); break
+        case "migration": migrationDialog.open(); break
+        case "palette": commandPalette.open(); break
+        case "profileSwitcher": profileSwitcherDialog.open(); break
+        case "scenes": scenesDialog.open(); break
         case "workflows": workflowDialog.open(); break
         case "management": managementDialog.open(); break
         case "appspace": appSpaceDialog.open(); break
@@ -343,7 +349,12 @@ ApplicationWindow {
     SafetyDialog { id: safetyDialog; host: win }
     PlacementDesigner { id: placementDesigner; host: win }
     InspectorDialog { id: inspectorDialog; host: win }
+    ClassDiscoveryDialog { id: classDiscoveryDialog; host: win }
+    RuleRequestDialog { id: ruleRequestDialog; host: win }
+    MigrationDialog { id: migrationDialog; host: win }
+    CommandPalette { id: commandPalette; host: win }
     WorkflowDialog { id: workflowDialog; host: win }
+    ProfileSwitcherDialog { id: profileSwitcherDialog; host: win }
     ManagementDialog { id: managementDialog; host: win }
     AppSpaceDialog { id: appSpaceDialog; host: win }
     ScenesDialog { id: scenesDialog; host: win }
@@ -354,7 +365,110 @@ ApplicationWindow {
         objectName: "shortcutsDialog"
         anchors.centerIn: parent; modal: true; title: qsTr("Keyboard shortcuts")
         standardButtons: Dialog.Close
-        Label { width: 440; wrapMode: Text.WordWrap; text: qsTr("Ctrl+S — review and save\nCtrl+K / Ctrl+F — focus search\nCtrl+R — refresh windows\nAlt+1–5 — settings sections\nCtrl+Z / Ctrl+Shift+Z — configuration undo/redo when draft is clean\nTab / Shift+Tab — move focus\nEscape — dismiss dialogs or leave edit mode\n? — this help\nCtrl+Q — quit (asks about unsaved changes)") }
+        Label { width: 440; wrapMode: Text.WordWrap; text: qsTr("Ctrl+S — review and save\nCtrl+K / Ctrl+F — focus search\nCtrl+Shift+K — command palette\nCtrl+Shift+P — switch context profile\nCtrl+R — refresh windows\nAlt+1–5 — settings sections\nCtrl+Z / Ctrl+Shift+Z — configuration undo/redo when draft is clean\nTab / Shift+Tab — move focus\nEscape — dismiss dialogs or leave edit mode\n? — this help\nCtrl+Q — quit (asks about unsaved changes)") }
+    }
+    function openWorkspacePin(slot, monitor, persistent, destination) {
+        workspacePinDialog.workspaceSlot = slot
+        workspacePinDialog.currentMonitor = monitor
+        workspacePinDialog.currentPersistent = persistent
+        workspacePinDialog.targetMonitor = destination || monitor
+        persistentPinChoice.checked = persistent
+        workspacePinDialog.feedback = ""
+        workspacePinDialog.open()
+    }
+    StudioDialog {
+        id: workspacePinDialog
+        objectName: "workspacePinDialog"
+        property string workspaceSlot: ""
+        property string currentMonitor: ""
+        property bool currentPersistent: false
+        property string targetMonitor: ""
+        property string feedback: ""
+        readonly property var displays: backend.monitors.map(output => output.description)
+            .filter((description, index, all) => description
+                && all.indexOf(description) === index && all.lastIndexOf(description) === index)
+        readonly property var plan: backend.workspacePlan.find(item => item.slot === workspaceSlot) || ({})
+        anchors.centerIn: parent
+        width: Math.min(win.width - 56, 540)
+        modal: true
+        title: qsTr("Plan workspace %1").arg(workspaceSlot)
+        standardButtons: Dialog.Cancel
+        contentItem: ScrollView {
+            id: workspacePinScroll
+            objectName: "toolScroll"
+            contentWidth: availableWidth
+            clip: true
+            ColumnLayout {
+            width: workspacePinScroll.availableWidth
+            spacing: 12
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#aebbc3"
+                text: qsTr("Preview this pin before saving. It affects the workspace placement plan; it does not move open windows immediately.")
+            }
+            ComboBox {
+                id: monitorChoice
+                objectName: "workspacePinMonitorChoice"
+                Layout.fillWidth: true
+                model: workspacePinDialog.displays
+                currentIndex: workspacePinDialog.displays.indexOf(workspacePinDialog.targetMonitor)
+                onActivated: workspacePinDialog.targetMonitor = currentText
+                Accessible.name: qsTr("Display for workspace %1").arg(workspacePinDialog.workspaceSlot)
+            }
+            CheckBox {
+                id: persistentPinChoice
+                objectName: "workspacePersistentPinChoice"
+                text: qsTr("Keep this workspace on the selected display")
+                Accessible.name: text
+            }
+            Label {
+                objectName: "workspacePinPreview"
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: monitorChoice.currentIndex >= 0
+                    ? qsTr("Workspace %1: %2 → %3%4").arg(workspacePinDialog.workspaceSlot)
+                        .arg(workspacePinDialog.currentMonitor || qsTr("Unpinned"))
+                        .arg(workspacePinDialog.targetMonitor)
+                        .arg(persistentPinChoice.checked ? qsTr(" · persistent") : "")
+                    : qsTr("Choose a connected display to preview the plan.")
+                font.bold: true
+            }
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: (workspacePinDialog.plan.apps || []).length
+                    ? qsTr("Apps with rules for this workspace: %1").arg(workspacePinDialog.plan.apps.join(", "))
+                    : qsTr("No app placement rules target this workspace.")
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: workspacePinDialog.feedback !== ""
+                wrapMode: Text.WordWrap
+                text: workspacePinDialog.feedback
+            }
+            Button {
+                objectName: "saveWorkspacePinAction"
+                Layout.alignment: Qt.AlignRight
+                text: qsTr("Save workspace plan")
+                enabled: monitorChoice.currentIndex >= 0 && !backend.monitorRevertPending && !backend.trialActive
+                    && (workspacePinDialog.plan.monitor || "") === workspacePinDialog.currentMonitor
+                    && !!workspacePinDialog.plan.persistent === workspacePinDialog.currentPersistent
+                onClicked: {
+                    if (backend.setWorkspacePlan(workspacePinDialog.workspaceSlot,
+                            workspacePinDialog.targetMonitor,
+                            persistentPinChoice.checked))
+                        workspacePinDialog.close()
+                    else workspacePinDialog.feedback = backend.status
+                }
+            }
+            }
+        }
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+P"
+        context: Qt.ApplicationShortcut
+        onActivated: profileSwitcherDialog.open()
     }
     function startOfflineTarget(withTitle) {
         editingRuleIndex = -1; editingRuleId = ""; editorMatch = ({}); classPatternField.text = ""; titlePatternField.text = ""
@@ -398,8 +512,15 @@ ApplicationWindow {
         return (state.matchingRules || []).map(rule => rule.name)
     }
     readonly property var draftSettings: options()
-    readonly property var draftImpact: backend.simulateRule(draftSettings)
-    readonly property var draftImpactCounts: draftImpact
+    readonly property var draftImpact: {
+        // The invokable alone does not subscribe to compositor window changes.
+        const windows = backend.windows
+        return backend.simulateRule(draftSettings)
+    }
+    property bool showAppImpact: false
+    property var impactAppHints: []
+    readonly property var draftImpactCounts: showAppImpact
+        ? backend.simulateAppHints(draftSettings, impactAppHints) : draftImpact
     property string previewMode: "draft"
     property string impactFilter: "matches"
     property bool previewFocus: false
@@ -408,7 +529,7 @@ ApplicationWindow {
     readonly property real previewScaleFactor: Math.min(
         (previewCanvas.width - 16) / Math.max(1, previewMonitorInfo.width || 1920),
         (previewCanvas.height - 16) / Math.max(1, previewMonitorInfo.height || 1080))
-    readonly property var visibleImpactWindows: (draftImpact[impactFilter] || [])
+    readonly property var visibleImpactWindows: (draftImpactCounts[impactFilter] || [])
         .map(result => Object.assign({category: impactFilter}, result))
 
     function previewWindowGeometry(proposed) {
@@ -515,6 +636,10 @@ ApplicationWindow {
         if (section >= 0) category = section
         headerSearch.text = !windowsPage && !desktopsPage && category === 4 ? ruleFilter : windowFilter
     }
+    function selectNextWindow() {
+        if (backend.windows.length === 0) return
+        chooseWindow((backend.selectedIndex + 1) % backend.windows.length)
+    }
     function loadRule(index) {
         if (dirty) { pendingRule = index; pendingWindow = -1; discardOnly = false; discardDialog.open(); return }
         const saved = backend.loadRuleForEditing(index)
@@ -528,6 +653,22 @@ ApplicationWindow {
     function restorePreset(settings) {
         applySettings(Object.assign({}, options(), settings))
         refreshPreview()
+    }
+    function stageRuleRequest(settings) {
+        if (dirty) return
+        editingRuleIndex = -1
+        editingRuleId = ""
+        selectionSettingsNote = qsTr("Draft from your request. Check the exact class, preview and rule impact before saving.")
+        applySettings(settings)
+        navigate(0)
+    }
+    function reviewGeometrySuggestion() {
+        const hint = backend.geometrySuggestion
+        if (dirty || !hint.id || backend.savedRules[hint.index]?.id !== hint.id) return
+        loadRule(hint.index)
+        if (editingRuleId !== hint.id) return
+        restorePreset(hint.settings)
+        backend.dismissGeometrySuggestion()
     }
     function applySettings(saved) {
         const match = saved.match || {}
@@ -675,6 +816,7 @@ ApplicationWindow {
     }
     Shortcut { sequence: "Ctrl+F"; context: Qt.ApplicationShortcut; onActivated: { headerSearch.forceActiveFocus(); headerSearch.selectAll() } }
     Shortcut { sequence: "Ctrl+K"; context: Qt.ApplicationShortcut; onActivated: { headerSearch.forceActiveFocus(); headerSearch.selectAll() } }
+    Shortcut { sequence: "Ctrl+Shift+K"; context: Qt.ApplicationShortcut; onActivated: commandPalette.open() }
     Shortcut { sequence: "Escape"; context: Qt.ApplicationShortcut; enabled: win.editingRuleIndex >= 0; onActivated: { win.editingRuleIndex = -1; win.editingRuleId = "" } }
     Shortcut { sequence: "Alt+1"; context: Qt.ApplicationShortcut; onActivated: win.navigate(0) }
     Shortcut { sequence: "Alt+2"; context: Qt.ApplicationShortcut; onActivated: win.navigate(1) }
@@ -768,12 +910,46 @@ ApplicationWindow {
                     onClicked: { win.settingsSearch = !win.settingsSearch; headerSearch.text = ""; headerSearch.forceActiveFocus() }
                 }
                 ToolButton {
+                    objectName: "profileSwitcherAction"
+                    text: qsTr("Profiles")
+                    enabled: !win.dirty
+                    Accessible.name: qsTr("Switch context profile")
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Switch context profile · Ctrl+Shift+P")
+                    onClicked: profileSwitcherDialog.open()
+                }
+                ToolButton {
                     text: "↻"
                     font.pixelSize: 20
                     ToolTip.visible: hovered
                     ToolTip.text: qsTr("Refresh window list · Ctrl+R")
                     onClicked: backend.refreshWindows()
                 }
+            }
+        }
+
+        RowLayout {
+            objectName: "geometrySuggestionBanner"
+            Layout.fillWidth: true
+            Layout.leftMargin: 16
+            Layout.rightMargin: 16
+            visible: !!backend.geometrySuggestion.id
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("Remember this change? “%1” repeatedly differed from its saved size or position.")
+                    .arg(backend.geometrySuggestion.name || "")
+            }
+            Button {
+                objectName: "reviewGeometrySuggestion"
+                text: qsTr("Open as draft")
+                enabled: !win.dirty
+                onClicked: win.reviewGeometrySuggestion()
+            }
+            Button {
+                objectName: "dismissGeometrySuggestion"
+                text: qsTr("Dismiss")
+                onClicked: backend.dismissGeometrySuggestion()
             }
         }
 
@@ -950,6 +1126,8 @@ ApplicationWindow {
                                     ToolLauncherTile { actionId: "safety"; title: qsTr("Safety and history"); detail: qsTr("Undo, snapshots, and trial changes") }
                                     ToolLauncherTile { actionId: "placement"; title: qsTr("Placement designer"); detail: qsTr("Arrange a window visually") }
                                     ToolLauncherTile { actionId: "inspect"; title: qsTr("Inspect match"); detail: qsTr("See which rules match a window") }
+                                    ToolLauncherTile { actionId: "discoverClass"; title: qsTr("Discover app class"); detail: qsTr("Compare a live window with app hints") }
+                                    ToolLauncherTile { actionId: "describeRule"; title: qsTr("Describe a rule"); detail: qsTr("Turn a short request into a draft") }
                                     ToolLauncherTile { actionId: "workflows"; title: qsTr("Presets and profiles"); detail: qsTr("Save and switch rule collections") }
                                 }
                                 Label {
@@ -965,6 +1143,7 @@ ApplicationWindow {
                                     rowSpacing: 7
                                     columnSpacing: 7
                                     ToolLauncherTile { actionId: "management"; title: qsTr("Applications and imports"); detail: qsTr("Create targets and organize rules") }
+                                    ToolLauncherTile { actionId: "migration"; title: qsTr("Encrypted transfer"); detail: qsTr("Preview a portable settings bundle") }
                                     ToolLauncherTile { objectName: "appSpaceMenuEntry"; actionId: "appspace"; title: qsTr("Apps, workspaces, displays"); detail: qsTr("Choose where apps open") }
                                 }
                                 Label {
@@ -982,6 +1161,15 @@ ApplicationWindow {
                                     ToolLauncherTile { actionId: "health"; title: qsTr("Compatibility and health"); detail: qsTr("Check supported Hyprland features") }
                                     ToolLauncherTile { actionId: "welcome"; title: qsTr("Getting started"); detail: qsTr("Open the guided walkthrough") }
                                     ToolLauncherTile { actionId: "shortcuts"; title: qsTr("Keyboard shortcuts"); detail: qsTr("View available key commands") }
+                                    ToolLauncherTile { actionId: "palette"; title: qsTr("Command palette"); detail: qsTr("Search actions and pin favorites") }
+                                }
+                                CheckBox {
+                                    objectName: "geometrySuggestionsToggle"
+                                    Layout.fillWidth: true
+                                    text: qsTr("Suggest rule updates after geometry changes")
+                                    checked: backend.geometrySuggestionsEnabled
+                                    onClicked: if (!backend.setGeometrySuggestionsEnabled(checked))
+                                        checked = backend.geometrySuggestionsEnabled
                                 }
                             }
                         }
@@ -1186,143 +1374,9 @@ ApplicationWindow {
                         width: desktopOverviewScroll.availableWidth
                         spacing: 12
 
-                        Label {
-                            objectName: "desktopNoMonitorData"
-                            visible: backend.monitors.length === 0
+                        DesktopMap {
                             Layout.fillWidth: true
-                            text: qsTr("Hyprland monitor data is unavailable. Refresh to try again.")
-                            color: win.mutedForeground
-                            wrapMode: Text.WordWrap
-                        }
-
-                        Repeater {
-                            model: backend.monitors
-                            delegate: Rectangle {
-                                id: monitorOverviewCard
-                                required property var modelData
-                                required property int index
-                                objectName: "desktopMonitorCard" + index
-                                Layout.fillWidth: true
-                                implicitHeight: monitorOverview.implicitHeight + 24
-                                radius: 8
-                                color: win.surface
-                                border.color: win.outline
-
-                                ColumnLayout {
-                                    id: monitorOverview
-                                    anchors.fill: parent
-                                    anchors.margins: 12
-                                    spacing: 10
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        ColumnLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 2
-                                            Label {
-                                                text: monitorOverviewCard.modelData.name || qsTr("Display %1").arg(monitorOverviewCard.index + 1)
-                                                font.pixelSize: 16
-                                                font.bold: true
-                                            }
-                                            Label {
-                                                text: monitorOverviewCard.modelData.description || qsTr("Display identity unavailable")
-                                                color: win.mutedForeground
-                                                font.pixelSize: 11
-                                                elide: Text.ElideMiddle
-                                            }
-                                        }
-                                        Label {
-                                            text: qsTr("%1×%2 · %3%")
-                                                .arg(monitorOverviewCard.modelData.width || 0)
-                                                .arg(monitorOverviewCard.modelData.height || 0)
-                                                .arg(Math.round((monitorOverviewCard.modelData.scale || 1) * 100))
-                                            color: win.mutedForeground
-                                            font.pixelSize: 11
-                                        }
-                                    }
-
-                                    GridLayout {
-                                        id: workspaceGrid
-                                        Layout.fillWidth: true
-                                        columns: width < 620 ? 1 : 2
-                                        rowSpacing: 8
-                                        columnSpacing: 8
-
-                                        Repeater {
-                                            model: backend.workspacePlan
-                                            delegate: Rectangle {
-                                                required property var modelData
-                                                readonly property string slot: modelData.slot
-                                                readonly property string monitorDescription: monitorOverviewCard.modelData.description || ""
-                                                readonly property string activeWorkspaceName:
-                                                    monitorOverviewCard.modelData.activeWorkspace
-                                                        ? String(monitorOverviewCard.modelData.activeWorkspace.name || "")
-                                                        : ""
-                                                readonly property var openWindows: backend.windows.filter(window =>
-                                                    window.monitorName === monitorOverviewCard.modelData.name
-                                                    && window.workspace === slot)
-                                                Layout.fillWidth: true
-                                                implicitHeight: workspaceTileContent.implicitHeight + 20
-                                                objectName: "desktopWorkspace" + monitorOverviewCard.index + "-" + slot
-                                                radius: 6
-                                                color: activeWorkspaceName === slot
-                                                    ? Qt.alpha(theme.accent, 0.1) : win.raisedSurface
-                                                border.color: activeWorkspaceName === slot
-                                                    ? Qt.alpha(theme.accent, 0.55) : win.outline
-                                                visible: modelData.monitor === "" || modelData.monitor === monitorDescription
-                                                    || openWindows.length > 0 || activeWorkspaceName === slot
-
-                                                ColumnLayout {
-                                                    id: workspaceTileContent
-                                                    anchors.fill: parent
-                                                    anchors.margins: 10
-                                                    spacing: 5
-                                                    RowLayout {
-                                                        Layout.fillWidth: true
-                                                        Label {
-                                                            text: qsTr("Workspace %1").arg(slot)
-                                                            font.weight: Font.Medium
-                                                        }
-                                                        Item { Layout.fillWidth: true }
-                                                        Label {
-                                                            objectName: "desktopWorkspaceActive" + monitorOverviewCard.index + "-" + slot
-                                                            visible: activeWorkspaceName === slot
-                                                            text: qsTr("ACTIVE")
-                                                            color: theme.accent
-                                                            font.pixelSize: 10
-                                                            font.bold: true
-                                                        }
-                                                        Label {
-                                                            visible: modelData.monitor === monitorDescription && monitorDescription !== ""
-                                                            text: qsTr("PINNED")
-                                                            color: win.mutedForeground
-                                                            font.pixelSize: 10
-                                                        }
-                                                    }
-                                                    Label {
-                                                        objectName: "desktopWorkspaceOpenApps" + monitorOverviewCard.index + "-" + slot
-                                                        Layout.fillWidth: true
-                                                        text: openWindows.length > 0
-                                                            ? openWindows.map(window => window.currentTitle || window["class"]).join(", ")
-                                                            : qsTr("No open windows")
-                                                        color: openWindows.length > 0 ? "#d5dde2" : win.mutedForeground
-                                                        font.pixelSize: 11
-                                                        wrapMode: Text.WordWrap
-                                                    }
-                                                    Label {
-                                                        Layout.fillWidth: true
-                                                        visible: (modelData.apps || []).length > 0
-                                                        text: qsTr("Placement rules: %1").arg((modelData.apps || []).join(", "))
-                                                        color: win.mutedForeground
-                                                        font.pixelSize: 10
-                                                        wrapMode: Text.WordWrap
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            host: win
                         }
                     }
                 }
@@ -1536,12 +1590,12 @@ ApplicationWindow {
                                             ColumnLayout {
                                                 Layout.fillWidth: true
                                                 Label { text: qsTr("X coordinate"); font.pixelSize: 11; opacity: 0.7 }
-                                                SpinBox { id: xField; objectName: "xField"; Layout.fillWidth: true; from: 0; to: 10000; value: 80; onValueChanged: win.refreshPreview() }
+                                                SpinBox { id: xField; objectName: "xField"; Layout.fillWidth: true; from: 0; to: 10000; value: 80; editable: true; onValueChanged: win.refreshPreview() }
                                             }
                                             ColumnLayout {
                                                 Layout.fillWidth: true
                                                 Label { text: qsTr("Y coordinate"); font.pixelSize: 11; opacity: 0.7 }
-                                                SpinBox { id: yField; objectName: "yField"; Layout.fillWidth: true; from: 0; to: 10000; value: 80; onValueChanged: win.refreshPreview() }
+                                                SpinBox { id: yField; objectName: "yField"; Layout.fillWidth: true; from: 0; to: 10000; value: 80; editable: true; onValueChanged: win.refreshPreview() }
                                             }
                                         }
                                     }
@@ -1564,16 +1618,16 @@ ApplicationWindow {
                                         RowLayout {
                                             Layout.fillWidth: true
                                             CheckBox { id: minSizeBox; text: qsTr("Minimum"); onToggled: win.refreshPreview() }
-                                            SpinBox { id: minWidthField; from: 1; to: 10000; value: 320; enabled: minSizeBox.checked; onValueChanged: win.refreshPreview() }
+                                            SpinBox { id: minWidthField; objectName: "minWidthField"; from: 1; to: 10000; value: 320; editable: true; enabled: minSizeBox.checked; onValueChanged: win.refreshPreview() }
                                             Label { text: "×"; opacity: 0.6 }
-                                            SpinBox { id: minHeightField; from: 1; to: 10000; value: 200; enabled: minSizeBox.checked; onValueChanged: win.refreshPreview() }
+                                            SpinBox { id: minHeightField; objectName: "minHeightField"; from: 1; to: 10000; value: 200; editable: true; enabled: minSizeBox.checked; onValueChanged: win.refreshPreview() }
                                         }
                                         RowLayout {
                                             Layout.fillWidth: true
                                             CheckBox { id: maxSizeBox; text: qsTr("Maximum"); onToggled: win.refreshPreview() }
-                                            SpinBox { id: maxWidthField; from: 1; to: 10000; value: 1200; enabled: maxSizeBox.checked; onValueChanged: win.refreshPreview() }
+                                            SpinBox { id: maxWidthField; objectName: "maxWidthField"; from: 1; to: 10000; value: 1200; editable: true; enabled: maxSizeBox.checked; onValueChanged: win.refreshPreview() }
                                             Label { text: "×"; opacity: 0.6 }
-                                            SpinBox { id: maxHeightField; from: 1; to: 10000; value: 900; enabled: maxSizeBox.checked; onValueChanged: win.refreshPreview() }
+                                            SpinBox { id: maxHeightField; objectName: "maxHeightField"; from: 1; to: 10000; value: 900; editable: true; enabled: maxSizeBox.checked; onValueChanged: win.refreshPreview() }
                                         }
                                     }
                                 }
@@ -1747,14 +1801,14 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                              CheckBox { id: borderBox; objectName: "borderBox"; text: qsTr("Set border width"); onToggled: win.refreshPreview() }
                                             Item { Layout.fillWidth: true }
-                                             SpinBox { id: borderSize; objectName: "borderSize"; from: 0; to: 20; value: 2; enabled: borderBox.checked; onValueChanged: win.refreshPreview() }
+                                             SpinBox { id: borderSize; objectName: "borderSize"; from: 0; to: 20; value: 2; editable: true; enabled: borderBox.checked; onValueChanged: win.refreshPreview() }
                                             Label { text: qsTr("px"); opacity: 0.55 }
                                         }
                                         RowLayout {
                                             Layout.fillWidth: true
                                              CheckBox { id: roundingBox; objectName: "roundingBox"; text: qsTr("Override corner rounding"); onToggled: win.refreshPreview() }
                                             Item { Layout.fillWidth: true }
-                                             SpinBox { id: roundingField; objectName: "roundingField"; from: 0; to: 100; value: 8; enabled: roundingBox.checked; onValueChanged: win.refreshPreview() }
+                                             SpinBox { id: roundingField; objectName: "roundingField"; from: 0; to: 100; value: 8; editable: true; enabled: roundingBox.checked; onValueChanged: win.refreshPreview() }
                                             Label { text: qsTr("px"); opacity: 0.55 }
                                         }
                                     }
@@ -2168,8 +2222,32 @@ ApplicationWindow {
                                 text: "i"
                                 Accessible.name: qsTr("About rule impact")
                                 ToolTip.visible: hovered
-                                ToolTip.text: win.draftImpact.coverage || qsTr("Evaluated against currently open windows only.")
+                                ToolTip.text: win.showAppImpact
+                                    ? qsTr("Desktop-entry class hints are not observed window properties. Even a matching hint is not a confirmed match.")
+                                    : win.draftImpact.coverage
                             }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            ComboBox {
+                                objectName: "impactSource"
+                                Layout.fillWidth: true
+                                Accessible.name: qsTr("Rule impact source")
+                                model: [qsTr("Open windows"), qsTr("Installed app hints")]
+                                onActivated: {
+                                    if (currentIndex === 1) win.impactAppHints = backend.installedApplications()
+                                    win.showAppImpact = currentIndex === 1
+                                    win.impactFilter = "matches"
+                                }
+                            }
+                        }
+                        Label {
+                            visible: win.showAppImpact
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 10
+                            color: win.mutedForeground
+                            text: qsTr("Hint results only. Select an open window to check its actual class.")
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -2187,7 +2265,9 @@ ApplicationWindow {
                                     text: modelData.label + " " + modelData.count
                                     checkable: true
                                     checked: win.impactFilter === modelData.key
-                                    Accessible.name: qsTr("%1 open windows").arg(modelData.label) + ", " + modelData.count
+                                     Accessible.name: win.showAppImpact
+                                         ? qsTr("%1 installed app hints: %2").arg(modelData.label).arg(modelData.count)
+                                         : qsTr("%1 open windows: %2").arg(modelData.label).arg(modelData.count)
                                     onClicked: win.impactFilter = modelData.key
                                     background: Rectangle {
                                         radius: 4
@@ -2241,7 +2321,9 @@ ApplicationWindow {
                                         Label {
                                             objectName: "impactWindowName"
                                             Layout.fillWidth: true
-                                            text: modelData.window.currentTitle || modelData.window.title || modelData.window["class"]
+                                             text: modelData.window
+                                                 ? (modelData.window.currentTitle || modelData.window.title || modelData.window["class"])
+                                                 : modelData.name
                                             color: "#e6e9eb"
                                             font.pixelSize: 10
                                             elide: Text.ElideRight
@@ -2260,7 +2342,8 @@ ApplicationWindow {
                                     anchors.centerIn: parent
                                     width: parent.width - 12
                                     visible: impactList.count === 0
-                                    text: win.impactFilter === "matches"
+                                     text: win.showAppImpact ? qsTr("No installed app hints in this category.")
+                                         : win.impactFilter === "matches"
                                         ? qsTr("No open windows match this draft.")
                                         : win.impactFilter === "uncertain"
                                           ? qsTr("No windows have uncertain match conditions.")
